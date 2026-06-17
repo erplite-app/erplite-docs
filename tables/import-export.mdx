@@ -69,25 +69,56 @@ Column headers must match exactly. Use the downloaded template to ensure compati
   </Step>
 </Steps>
 
-### Data Type Handling
+### Field Format Reference
 
-The import process automatically converts data types:
+Every column type expects a specific cell format. Use this table when preparing your file — getting the format right up front avoids validation errors.
 
-| Column Type | Expected Format | Example |
-|-------------|-----------------|---------|
-| Text | Plain text | `John Doe` |
-| Number | Numeric value | `123.45` |
-| Boolean | true/false, yes/no, 1/0 | `true` |
-| Date | YYYY-MM-DD | `2024-01-15` |
-| DateTime | ISO 8601 | `2024-01-15T10:30:00` |
-| Location | `address, lat, long` | `123 Main St, 37.77, -122.41` |
-| Choice | Exact option text | `Pending` |
-| Multi-Select | Comma-separated | `Tag1, Tag2, Tag3` |
-| List of Text | Comma-separated | `item1, item2, item3` |
+| Column Type | Expected Format | Example | Empty cell |
+|-------------|-----------------|---------|------------|
+| Text / Textarea | Plain text | `John Doe` | Cleared (left blank) |
+| Number / Currency / Percent | A number only — no symbols, no thousands separators | `1234.50` (not `$1,234.50`) | Cleared |
+| Boolean | `true`/`false`, `yes`/`no`, or `1`/`0` | `true` | Cleared |
+| Date | `YYYY-MM-DD` | `2024-01-15` | Cleared |
+| DateTime | ISO 8601 | `2024-01-15T10:30:00` | Cleared |
+| Email | A valid email address | `john@example.com` | Cleared |
+| Phone | Plain text (digits, `+`, spaces) | `+1 555 0100` | Cleared |
+| URL | A single valid URL (includes `https://`) | `https://acme.com` | Cleared |
+| Choice | Exact option text (case-sensitive) | `Pending` | Cleared |
+| Multi-Select | Comma-separated option text | `Tag1, Tag2, Tag3` | Cleared |
+| List of Text | Comma-separated values | `item1, item2, item3` | Cleared |
+| Location | `address, lat, long` | `123 Main St, 37.77, -122.41` | Cleared |
+| **File / Image** | **One URL, or several URLs separated by commas** | `https://cdn.acme.com/a.pdf` or `https://cdn.acme.com/a.pdf, https://cdn.acme.com/b.pdf` | **Set to empty (no file)** |
+| **Relation** | **The target record's display name, or its record ID** | `Acme Corp` or `rec_abc123` | Cleared (link removed) |
+| User / Team | The user/team's name (resolution is best-effort — use the ID if a name doesn't resolve) | `Priya Sharma` | Cleared |
+
+<Note>
+Computed, button, and signature columns are read-only on import — values in those columns are ignored.
+</Note>
 
 ### Import Tips
 
 <AccordionGroup>
+  <Accordion title="File & Image fields (URLs)">
+    File and image columns store **URLs**, and a record can hold more than one.
+
+    - **One file**: put a single URL in the cell — `https://cdn.acme.com/invoice.pdf`
+    - **Multiple files**: separate the URLs with commas — `https://cdn.acme.com/a.pdf, https://cdn.acme.com/b.pdf`
+    - **No file**: leave the cell empty — the field is stored as empty (it will not error)
+
+    Each value must be a valid URL (starting with `http://` or `https://`). A value that isn't a URL is flagged on the row.
+  </Accordion>
+
+  <Accordion title="Relation fields (name vs. record ID)">
+    A relation cell can be either:
+
+    - the target record's **display name** (e.g. `Acme Corp`), or
+    - its **record ID** (e.g. `rec_abc123`).
+
+    For a **multi-link** relation, separate several values with commas: `Acme Corp, Globex`.
+
+    If a display name matches **more than one** record, the importer can't tell which one you mean. It will ask you to **use the record ID** for that cell instead — the record ID is always unique. (Tip: export the related table first to get each record's ID.)
+  </Accordion>
+
   <Accordion title="Handling Date Formats">
     Dates should be in `YYYY-MM-DD` format. Other formats may cause validation errors.
   </Accordion>
@@ -99,10 +130,6 @@ The import process automatically converts data types:
 
   <Accordion title="Choice Fields">
     Values must exactly match one of the defined options (case-sensitive).
-  </Accordion>
-
-  <Accordion title="Relation Fields">
-    For relation fields, use the record ID or display column value of the target record.
   </Accordion>
 </AccordionGroup>
 
@@ -264,7 +291,8 @@ The import process validates:
 - **Type matching**: Values match column data types
 - **Required fields**: All required columns have values
 - **Choice validation**: Values match defined options
-- **Relation validation**: Referenced records exist
+- **Relation validation**: Referenced records exist. A value that can't be matched to a record returns guidance to **use the record ID to disambiguate** (a display name may be missing or match more than one record).
+- **File / Image normalization**: A single URL, a comma-separated list, or a JSON array of URLs is accepted and stored as an array; an empty cell is stored as empty (no error). Each value must be a valid URL.
 
 ### UI Elements
 
