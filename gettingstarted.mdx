@@ -3,38 +3,85 @@ title: Getting Started
 description: "The technology platform to build Native apps for your internal teams"
 ---
 
-Welcome to the ERPLite Documentation. You can find all the resources on how to build, manage and execute ERPLite applications here. This is a continuous work in progress. We appreciate any input on how to make this better. ERPLite helps you build apps and products for your Mobile Workforce, in minutes.
+This guide gives administrators a practical order for setting up a new ERPLite workspace. You can use the same order when reviewing an existing workspace before rollout.
 
 <CardGroup cols={2}>
-  <Card title="Tables" icon="palette" href="tables/acl">
-    The technology platform to build Native apps for your internal teams
+  <Card title="AI-Assisted Setup" icon="sparkles" href="/ai-setup/end-to-end">
+    Give an AI the business process, then have it configure and verify ERPLite step by step.
   </Card>
-  <Card
-    title="Alerts & Monitoring"
-    icon="code"
-    href="https://mintlify.com/docs/api-playground/openapi"
-  >
-    The technology platform to build Native apps for your internal teams
+  <Card title="Find Your Workspace" icon="building-2" href="/administration/account-access">
+    Sign in using your workspace URL or recover the workspace linked to your email.
   </Card>
-  <Card
-    title="Sharing an Permissions"
-    icon="screwdriver-wrench"
-    href="https://mintlify.com/docs/components/accordion"
-  >
-    The technology platform to build Native apps for your internal teams
+  <Card title="Manage Users" icon="user-plus" href="/usermanagement">
+    Invite users, assign roles and teams, and deactivate access when needed.
   </Card>
-  <Card
-    title="No-Code Ops Apps"
-    icon="screwdriver-wrench"
-    href="https://mintlify.com/docs/components/accordion"
-  >
-    The technology platform to build Native apps for your internal teams
+  <Card title="Build Tables" icon="table" href="/tables/overview">
+    Model the records your team needs to create, update, approve, or report on.
   </Card>
-  <Card
-    title="Workflows & Process Automation"
-    icon="stars"
-    href="https://mintlify.com/customers"
-  >
-    Learn how to build workflows with ERPLite
+  <Card title="Create Views" icon="columns-3" href="/tables/views">
+    Save filtered, grouped, or kanban views for each operating team.
+  </Card>
+  <Card title="Configure Workflows" icon="git-branch" href="/workflows/workflows">
+    Add status paths, action buttons, and business guardrails.
+  </Card>
+  <Card title="Set Up Reports" icon="chart-column" href="/reports/overview">
+    Give managers the live dashboards and reports they need to run the operation.
   </Card>
 </CardGroup>
+
+## Setup Checklist
+
+<Steps>
+  <Step title="Confirm account settings">
+    Open **Settings > Account**. Check the account name, workspace URL, default timezone, and Slack connection if your automations send Slack messages.
+  </Step>
+  <Step title="Create your organization structure">
+    Add teams in the same hierarchy you use operationally. Teams are used for assignment, filtering, permissions, and reporting.
+  </Step>
+  <Step title="Define roles and permissions">
+    Create roles such as Admin, Manager, Operator, Finance, or Vendor Coordinator. Give each role the minimum access it needs.
+  </Step>
+  <Step title="Invite users">
+    Add users with their email, phone number, role, and teams. Use inactive status instead of deletion when you may need to keep history tied to a person.
+  </Step>
+  <Step title="Review tables and columns">
+    Make sure each table has clear display fields, relation fields, required fields, status fields, and ownership fields.
+  </Step>
+  <Step title="Create views for daily work">
+    Build saved views such as "Open POs", "My pending dispatches", "At risk stock", or "Overdue work orders" so users do not need to rebuild filters.
+  </Step>
+  <Step title="Add workflow actions">
+    Use workflow buttons for business actions such as Confirm PO, Move to Production, Dispatch, Mark Received, Approve, Reject, or Close.
+  </Step>
+  <Step title="Automate repeatable work">
+    Add automations for notifications, document generation, rollups, field updates, external API calls, and scheduled reminders.
+  </Step>
+</Steps>
+
+## Daily Operating Model
+
+Most users spend their time in one of three places:
+
+- **Home** for assigned queues, shortcuts, and high-priority work.
+- **Tables** for searching, editing, importing, exporting, and reviewing records.
+- **Reports** for management review and exception monitoring.
+
+Administrators usually work in **Configurations** and **Settings** to adjust workflows, automations, document mappings, dashboard cards, users, roles, and account settings.
+
+<Note>
+If a user cannot see a table, view, column, or action button, check both their role permissions and the table or column-level permissions. ERPLite intentionally combines these controls so sensitive records can be shared narrowly.
+</Note>
+
+## AI Setup Loop
+
+For every setup task, ask the AI to follow this loop:
+
+1. **Choose the feature**: Explain why a table, view, workflow, automation, report, or permission is the right tool for the job.
+2. **Configure one change**: Make the smallest meaningful change in ERPLite.
+3. **Create or use a sample record**: Use realistic data that matches the operation.
+4. **Verify the outcome**: Check what users can see, what actions are available, and what changed after the action runs.
+5. **Document the decision**: Record the purpose, owner, expected behavior, and any limits.
+
+<Tip>
+Good AI setup prompts include the business goal, current pain point, example records, user roles, teams involved, and the exact proof you want after setup.
+</Tip>

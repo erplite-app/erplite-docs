@@ -1,174 +1,40 @@
 ---
-title: "Data Fields Overview"
-sidebarTitle: "Overview"
-description: "Store and manage data collected during workflow task execution."
+title: "Workflow Data Fields"
+sidebarTitle: "Data Fields"
+description: "Understand the data that workflow screens, actions, and automations read or update."
 ---
 
-## Overview
+Workflow data fields are the values a process uses while users complete work. In table-driven workflows, most workflow data comes from table columns and related records.
 
-Data fields are variables that store information during task execution. They act as the database for your workflow, holding everything from user inputs to calculated values.
+## Field Sources
 
-<CardGroup cols={2}>
-  <Card title="Data Storage" icon="database">
-    Store values collected during tasks
-  </Card>
-  <Card title="Multiple Types" icon="shapes">
-    Text, numbers, dates, images, and more
-  </Card>
-  <Card title="Bind to Components" icon="link">
-    Connect UI components to data fields
-  </Card>
-  <Card title="Use in Logic" icon="code">
-    Reference in conditions and automations
-  </Card>
-</CardGroup>
+| Source | Examples |
+|--------|----------|
+| **Record fields** | Status, owner, amount, due date, priority, location. |
+| **Related records** | Vendor, customer, asset, line items, dispatches, invoices. |
+| **System fields** | Created date, updated date, created by, current user, current team. |
+| **Derived fields** | Totals, lookups, rollups, calculated values. |
+| **Automation context** | Previous value, current value, webhook payload, scheduled run time. |
 
----
+## AI Guidance
 
-## Types of Data Fields
+### When to Use This Feature
 
-| Type | Description |
-|------|-------------|
-| **[System Data Fields](/workflows/systemdatafields)** | Predefined fields common to all workflows (task info, user info) |
-| **[User Data Fields](/workflows/userdatafields)** | Custom fields you define for your workflow |
+An AI should review data fields whenever it configures workflow actions, guards, validations, automations, reports, or dashboard widgets.
 
----
+### How to Use It
 
-## Data Field Properties
+1. List the fields required to make the business decision.
+2. Confirm each field exists on the table or related record.
+3. Create missing fields using the correct column type.
+4. Use derived fields for values that should be calculated.
+5. Use conditional fields or validations when a field is required only in some statuses.
 
-Each data field has these properties:
+### How to Verify
 
-| Property | Description |
-|----------|-------------|
-| **Name** | Unique identifier for the field |
-| **Data Type** | Type of data stored (text, number, etc.) |
-| **Default Value** | Initial value when task is created |
-| **Create Time Field** | Whether this field is required at task creation |
-| **Mandatory** | Whether the field must have a value |
+The AI should verify:
 
----
-
-## Data Types
-
-| Data Type | Category | Description |
-|-----------|----------|-------------|
-| **Text** | Simple | Text or string value |
-| **Number** | Simple | Numerical value |
-| **Boolean** | Simple | True or false |
-| **Date** | Simple | Date and time value |
-| **List of Text** | Simple | Array of text values |
-| **Image** | Simple | List of uploaded images |
-| **Signature** | Simple | Digital signature |
-| **File** | Simple | List of uploaded files |
-| **Location** | Composite | Address with latitude & longitude |
-| **List** | Composite | Collection of sub-fields |
-
----
-
-## Using Data Fields
-
-### 1. Bind to Components
-
-Connect data fields to UI components to display or collect data:
-
-- **Display components**: Show data field values (labels, text displays)
-- **Input components**: Save user input to data fields (text input, camera)
-
-### 2. Use in Conditions
-
-Reference data fields in decision nodes and automation conditions:
-
-```javascript
-// Check if order amount exceeds limit
-task.data.order_amount > 1000
-```
-
-### 3. Use in Actions
-
-Include data field values in automation actions:
-
-```javascript
-// Send notification with customer name
-"New order from {{task.data.customer_name}}"
-```
-
----
-
-## For AI Agents
-
-### Data Field Structure
-
-```typescript
-interface DataField {
-  fieldId: string;
-  name: string;
-  displayName: string;
-  type: DataFieldType;
-  defaultValue?: any;
-  isCreateTimeField: boolean;
-  isMandatory: boolean;
-  config?: DataFieldConfig;
-}
-
-type DataFieldType =
-  | 'TEXT'
-  | 'NUMBER'
-  | 'BOOLEAN'
-  | 'DATE'
-  | 'LIST_OF_TEXT'
-  | 'IMAGE'
-  | 'SIGNATURE'
-  | 'FILE'
-  | 'LOCATION'
-  | 'LIST';
-
-interface LocationField {
-  address: string;
-  latitude: number;
-  longitude: number;
-}
-```
-
-### API: Get Data Fields
-
-```bash
-GET /api/v1/workflows/:workflowId/datafields
-Authorization: Bearer {token}
-```
-
-### API: Update Task Data
-
-```bash
-PATCH /api/v1/tasks/:taskId
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{
-  "data": {
-    "customer_name": "John Doe",
-    "order_amount": 150
-  }
-}
-```
-
-### Accessing Data in Scripts
-
-```javascript
-// User-defined data fields
-task.data.field_name
-
-// System data fields
-task.taskId
-task.status
-task.assignedTo
-loggedInUser.name
-loggedInUser.role
-```
-
-### UI Components
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| DataFieldManager | `/src/views/workflows/datafields/` | Data field configuration |
-| DataFieldPicker | `/src/components/DataFieldPicker/` | Field selection modal |
-| DataFieldEditor | `/src/views/workflows/datafields/Editor/` | Field properties editor |
+- Every workflow rule references an existing field.
+- The field type matches the rule being applied.
+- Required fields are visible to the users who must fill them.
+- Restricted fields are still available to automations only where appropriate.

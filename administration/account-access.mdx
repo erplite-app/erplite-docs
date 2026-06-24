@@ -1,0 +1,78 @@
+---
+title: Account Access
+description: "Sign in to the right ERPLite workspace and recover workspace access."
+---
+
+ERPLite workspaces have their own workspace URL. This keeps users scoped to the right account, even when the same email address belongs to more than one workspace.
+
+## Find Your Workspace
+
+Go to the main ERPLite sign-in page and choose one of these options:
+
+| Option | When to use it |
+|--------|----------------|
+| **Workspace URL** | You know your workspace name, such as `your-company.erplite.app`. |
+| **Find by email** | You do not remember which workspaces your email belongs to. |
+
+When using **Find by email**, ERPLite sends workspace links to the email address if it belongs to any workspaces. The page does not display the workspace list directly.
+
+## Sign In
+
+<Steps>
+  <Step title="Open your workspace URL">
+    Use the workspace URL shared by your administrator, or enter your workspace name from the workspace finder.
+  </Step>
+  <Step title="Choose a sign-in method">
+    Sign in with Google if enabled for your account, or use email/user ID and password.
+  </Step>
+  <Step title="Complete verification if prompted">
+    If your account has two-factor verification enabled, enter the one-time code sent to your email or phone.
+  </Step>
+  <Step title="Open your workspace">
+    After successful sign-in, ERPLite opens the Tables area by default.
+  </Step>
+</Steps>
+
+## Shared Email Across Workspaces
+
+The same email address can belong to multiple ERPLite workspaces. Always sign in from the correct workspace URL so your login is scoped to the intended account.
+
+<Tip>
+If a user says they signed in but cannot see expected tables or records, first confirm they are on the correct workspace URL.
+</Tip>
+
+## SSO and SCIM
+
+Some companies use SAML SSO for centralized identity management. In SSO-enforced workspaces:
+
+- Users sign in through the company's identity provider.
+- Password and Google login may be blocked.
+- New users can be provisioned automatically based on the configured identity provider.
+- Deprovisioned users can be revoked so they lose access quickly.
+
+Contact your ERPLite administrator if your SSO login fails or your role/team assignment looks incorrect after signing in.
+
+## Account Recovery Checklist
+
+1. Confirm the workspace URL.
+2. Confirm the email or user ID belongs to that workspace.
+3. Ask an admin to verify that the user is active.
+4. If two-factor verification is enabled, check that the user's email or phone number is current.
+5. For SSO workspaces, confirm the user is active in the identity provider.
+
+## AI Guidance
+
+### When to Use This Feature
+
+An AI should use Account Access guidance when users cannot sign in, cannot find the correct workspace, or belong to multiple ERPLite accounts.
+
+### How to Use It
+
+1. Confirm the workspace URL.
+2. Confirm the user's active status.
+3. Confirm whether password, Google, two-factor, or SSO is the expected login method.
+4. Use workspace recovery by email if the workspace is unknown.
+
+### How to Verify
+
+The AI should verify that the user lands in the correct workspace and can access the expected home page, tables, or tasks.

@@ -1,285 +1,71 @@
 ---
 title: "Column Permissions"
 sidebarTitle: "Column Permissions"
-description: "Control who can view and edit specific columns within a table for granular data security."
+description: "Control who can view or edit sensitive fields."
 ---
 
-## Overview
+Column permissions control access to individual fields inside a table. Use them when users need access to the table but should not see or change every field.
 
-Column permissions allow you to restrict access to specific columns within a table. This is useful for hiding sensitive information (like salaries, personal data, or internal notes) from users who don't need to see it.
+## When Column Permissions Help
 
-<Note>
-Column permissions work in addition to table permissions. A user must have table access AND column permission to see/edit a column.
-</Note>
+Use column permissions for:
 
----
+- Pricing, margins, or financial fields.
+- Internal notes not visible to vendors or restricted users.
+- Approval fields only managers should edit.
+- System-managed fields users should not change.
+- Personally identifiable information.
+- Sensitive customer or supplier details.
 
-## How Column Permissions Work
+## View vs Edit
 
-By default, all columns are visible to anyone with table access. When you set column permissions:
+| Permission | Behavior |
+|------------|----------|
+| **Can view** | User can see the field value. |
+| **Can edit** | User can change the field value where editing is allowed. |
 
-- Only specified users/teams/roles can **view** the column
-- Only specified users/teams/roles can **edit** the column
-- Others see the column header but cannot see or modify values
+A user who cannot view a field should not rely on it for day-to-day decisions because it will be hidden or unavailable in their experience.
 
----
+## AI Guidance
 
-## Setting Column Permissions
+### When to Use This Feature
+
+An AI should use column permissions when table-wide access is correct but a subset of fields is sensitive or should be controlled by managers, finance, or automations.
+
+Do not create a duplicate table just to hide a few fields. Use column permissions first.
+
+### How to Use It
 
 <Steps>
-  <Step title="Open Column Menu">
-    Click the dropdown arrow on the column header
+  <Step title="Identify sensitive fields">
+    Mark fields that should not be visible or editable to every table user.
   </Step>
-  <Step title="Select Column Permissions">
-    Click **Column Permissions** from the menu
+  <Step title="Open column settings">
+    Edit the column and open its permissions section.
   </Step>
-  <Step title="Configure View Access">
-    Under **Who can view**, add:
-    - Specific users
-    - Teams
-    - Roles
+  <Step title="Choose viewers and editors">
+    Select the users, teams, or roles that can view and edit the field.
   </Step>
-  <Step title="Configure Edit Access">
-    Under **Who can edit**, add:
-    - Specific users
-    - Teams
-    - Roles
+  <Step title="Save the column">
+    Save the table changes.
   </Step>
-  <Step title="Save">
-    Click **Save** to apply the permissions
+  <Step title="Test with different users">
+    Confirm the field appears and edits only for the intended people.
   </Step>
 </Steps>
 
----
+### How to Verify
 
-## Permission Levels
+The AI should verify:
 
-### View Permission
-Controls who can see the column values.
-
-- Users **with** view permission: See full column data
-- Users **without** view permission: Column is hidden or shows placeholder
-
-### Edit Permission
-Controls who can modify the column values.
-
-- Users **with** edit permission: Can modify values in edit/create forms
-- Users **without** edit permission: Field is read-only or hidden
-
-<Note>
-Edit permission requires view permission. You cannot edit what you cannot see.
-</Note>
-
----
-
-## Default Behavior
-
-| Scenario | Behavior |
-|----------|----------|
-| No permissions set | Everyone with table access can view and edit |
-| Only view permissions set | Specified users can view; editing follows table permissions |
-| Only edit permissions set | Everyone can view; only specified users can edit |
-| Both permissions set | Full control over both viewing and editing |
-
----
-
-## Use Cases
-
-<AccordionGroup>
-  <Accordion title="Salary/Compensation Data">
-    Restrict salary columns to HR and management:
-    - **View**: HR Team, Manager Role
-    - **Edit**: HR Team only
-  </Accordion>
-
-  <Accordion title="Personal Contact Information">
-    Limit access to personal data:
-    - **View**: Direct managers, HR
-    - **Edit**: HR only
-  </Accordion>
-
-  <Accordion title="Internal Notes">
-    Hide internal comments from external viewers:
-    - **View**: Internal team only
-    - **Edit**: Internal team only
-  </Accordion>
-
-  <Accordion title="Pricing Information">
-    Control who sees pricing:
-    - **View**: Sales team, Finance team
-    - **Edit**: Finance team only
-  </Accordion>
-
-  <Accordion title="Approval Fields">
-    Restrict approval status changes:
-    - **View**: Everyone
-    - **Edit**: Approvers role only
-  </Accordion>
-</AccordionGroup>
-
----
+- A permitted user can see the field.
+- A permitted editor can update the field.
+- A restricted user cannot see or edit the field.
+- Views, imports, exports, reports, and relation displays do not unintentionally expose restricted values.
+- Automations that depend on the field still work as intended.
 
 ## Best Practices
 
-<CardGroup cols={2}>
-  <Card title="Use Roles Over Users" icon="user-shield">
-    Set permissions by role for easier management when team members change
-  </Card>
-  <Card title="Document Restrictions" icon="file-lines">
-    Add column descriptions explaining why access is restricted
-  </Card>
-  <Card title="Test Thoroughly" icon="vial">
-    Verify permissions by logging in as different user types
-  </Card>
-  <Card title="Review Regularly" icon="calendar-check">
-    Audit column permissions periodically to ensure they're still appropriate
-  </Card>
-</CardGroup>
-
----
-
-## Troubleshooting
-
-<AccordionGroup>
-  <Accordion title="User can't see a column they should see">
-    1. Verify the user has table-level view permission
-    2. Check if column permissions are set
-    3. Confirm the user is in the correct team/role
-    4. Check if the column is hidden in the current view
-  </Accordion>
-
-  <Accordion title="User can see but not edit a column">
-    1. Check column edit permissions
-    2. Verify user has table-level edit permission
-    3. Confirm the user is in the authorized team/role
-  </Accordion>
-
-  <Accordion title="Permissions not applying">
-    1. Clear browser cache
-    2. Refresh the page
-    3. Log out and log back in
-    4. Verify permissions were saved successfully
-  </Accordion>
-</AccordionGroup>
-
----
-
-## For AI Agents
-
-### UI Navigation
-
-Column permissions are accessed via:
-1. Column header dropdown menu
-2. Select "Column Permissions"
-3. Modal opens with view/edit permission configuration
-
-### Component Reference
-
-```typescript
-// Column permissions modal component
-Component: ColumnPermissions.tsx
-Location: /src/views/entities/permissions/ColumnPermissions.tsx
-
-// Modal sections:
-// - "Who can view" - User/Team/Role selector
-// - "Who can edit" - User/Team/Role selector
-```
-
-### Permission Structure in Column Definition
-
-```typescript
-interface ColumnDefinition {
-  name: string;
-  displayName: string;
-  type: string;
-  permissions?: {
-    view: {
-      userIds: string[];
-      teamIds: string[];
-      roleIds: string[];
-    };
-    edit: {
-      userIds: string[];
-      teamIds: string[];
-      roleIds: string[];
-    };
-  };
-}
-```
-
-### Setting Permissions via API
-
-Column permissions are updated through the table metadata API:
-
-```bash
-POST /zorp-tables-service/table/update
-Authorization: Bearer {secretKey}
-Content-Type: application/json
-
-{
-  "tableType": "my_table",
-  "columns": [
-    {
-      "name": "salary",
-      "displayName": "Salary",
-      "type": "NUMBER",
-      "permissions": {
-        "view": {
-          "userIds": [],
-          "teamIds": ["hr_team"],
-          "roleIds": ["manager"]
-        },
-        "edit": {
-          "userIds": [],
-          "teamIds": ["hr_team"],
-          "roleIds": []
-        }
-      }
-    }
-  ]
-}
-```
-
-### Checking Column Access
-
-When rendering table data, check column permissions:
-
-```javascript
-// Check if user can view column
-function canViewColumn(column, currentUser) {
-  if (!column.permissions?.view) return true; // No restrictions
-
-  const { userIds, teamIds, roleIds } = column.permissions.view;
-
-  return (
-    userIds.includes(currentUser.id) ||
-    teamIds.some(t => currentUser.teamIds.includes(t)) ||
-    roleIds.some(r => currentUser.roleIds.includes(r))
-  );
-}
-
-// Check if user can edit column
-function canEditColumn(column, currentUser) {
-  if (!column.permissions?.edit) return true; // No restrictions
-
-  const { userIds, teamIds, roleIds } = column.permissions.edit;
-
-  return (
-    userIds.includes(currentUser.id) ||
-    teamIds.some(t => currentUser.teamIds.includes(t)) ||
-    roleIds.some(r => currentUser.roleIds.includes(r))
-  );
-}
-```
-
-### UI Elements
-
-| Element | Selector | Purpose |
-|---------|----------|---------|
-| Column Header Menu | Column header dropdown | Access column options |
-| Column Permissions | Menu item | Opens permissions modal |
-| View Permissions | Modal section | Configure view access |
-| Edit Permissions | Modal section | Configure edit access |
-| User Selector | Search input | Add specific users |
-| Team Selector | Dropdown | Select teams |
-| Role Selector | Dropdown | Select roles |
+- Use roles or teams for column permissions instead of individual users where possible.
+- Use derived fields for read-only calculated values instead of editable sensitive formulas.
+- Re-check column permissions after importing new fields or copying tables.

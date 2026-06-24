@@ -30,10 +30,6 @@
   },
   "tabs": [
     {
-      "name": "CMMS",
-      "url": "cmms"
-    },
-    {
       "name": "Tables",
       "url": "tables"
     },
@@ -42,12 +38,12 @@
       "url": "workflows"
     },
     {
-      "name": "App",
-      "url": "mobile-app"
+      "name": "Configurations",
+      "url": "configurations"
     },
     {
-      "name": "Alerts",
-      "url": "alerts"
+      "name": "Reports",
+      "url": "reports"
     }
   ],
   "anchors": [
@@ -70,27 +66,46 @@
   "navigation": [
     {
       "group": "Getting Started",
-      "pages": ["introduction"]
+      "pages": ["introduction", "gettingstarted", "ai-setup/end-to-end"]
     },
     {
       "group": "Administration Hub",
-      "pages": ["teamhierarchy", "usermanagement", "rolemanagement"]
+      "pages": [
+        "administration/account-access",
+        "teamhierarchy",
+        "usermanagement",
+        "rolemanagement",
+        "administration/account-settings",
+        "administration/api-keys-secrets",
+        "administration/sidebar-organization"
+      ]
+    },
+    {
+      "group": "Configurations",
+      "pages": [
+        "configurations/overview",
+        "configurations/home-dashboard",
+        "configurations/document-mappings"
+      ]
+    },
+    {
+      "group": "Reports",
+      "pages": ["reports/overview"]
+    },
+    {
+      "group": "Templates",
+      "pages": ["manufacturing/overview"]
     },
     {
       "group": "Getting Started",
-      "pages": ["cmms/WorkOrders", "cmms/PreventiveMaintenance", "cmms/checklists"]
-    },
-    {
-      "group": "Asset Management",
-      "pages": ["cmms/assets", "cmms/assetfields", "cmms/create_assets", "cmms/Locations", "cmms/inventory"]
-    },
-    {
-      "group": "Mobile CMMS",
-      "pages": ["cmms/homescreen", "cmms/login", "cmms/appworkorder"]
-    },
-    {
-      "group": "Getting Started",
-      "pages": ["tables/overview", "tables/columns", "tables/operations"]
+      "pages": [
+        "tables/overview",
+        "tables/columns",
+        "tables/relations",
+        "tables/derived-fields",
+        "tables/conditional-fields",
+        "tables/operations"
+      ]
     },
     {
       "group": "Working with Data",
@@ -141,18 +156,6 @@
     {
       "group": "Going to Production",
       "pages": ["workflows/testworkflows", "workflows/publishing"]
-    },
-    {
-      "group": "Mobile App",
-      "pages": ["mobile-app/introduction", "mobile-app/tasks", "mobile-app/duplicate-records"]
-    },
-    {
-      "group": "Alerts",
-      "pages": ["alerts/alerts", "alerts/connect"]
-    },
-    {
-      "group": "Alerts with Bluebee AI",
-      "pages": ["alerts/suggestions", "alerts/personalized-alerts"]
     }
   ],
   "footerSocials": {

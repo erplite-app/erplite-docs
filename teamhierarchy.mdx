@@ -3,34 +3,79 @@ title: Team Hierarchy
 description: "You can easily implement your org and team structure in ERPLite. "
 ---
 
-
 ![Managing Teams](./images/teams.png)
 
-Managing teams is a critical part of any organization. ERPLite let's you assign teams to your users and manage their access to the platform.
+Use **Settings > Teams** to model the departments, sites, shifts, regions, vendors, or operating units that own work in ERPLite. Teams are used for assignments, filters, permissions, dashboards, and reports.
 
-## Adding a New Team
+## How Team Hierarchy Works
 
-Follow these steps to add a new team into the mix
+Teams can be nested under a parent team. For example:
 
-1. Head over to the `settings` tab on the left sidebar.
-2. Click on the `Teams` tab.
-3. Click on `Add Team` .
-4. Fill in all necessary details.
-5. Hit `Create Team` .
+```text
+Operations
+  North Region
+    Delhi Warehouse
+    Jaipur Warehouse
+  South Region
+    Chennai Plant
+    Bengaluru Hub
+```
 
-You have successfully, added a new team.
+This hierarchy makes it easier to assign records, filter views, and grant access by operating unit.
 
-## Deleting a Team
+## Create a Team
 
-Follow these steps to delete an unwanted team from the hierarchy.
+<Steps>
+  <Step title="Open Teams">
+    Go to **Settings > Teams**.
+  </Step>
+  <Step title="Click New Team">
+    Create a new team under the root team, or use a parent team's action menu to add a child team.
+  </Step>
+  <Step title="Enter team details">
+    Give the team a clear business name. Use names that users will recognize in filters, assignments, and reports.
+  </Step>
+  <Step title="Save">
+    The team appears in the interactive hierarchy tree.
+  </Step>
+</Steps>
 
-1. Click on the team you want to delete.
-2. Click on `Delete` .
+## Edit a Team
 
-There you go!
+1. Search for the team if the hierarchy is large.
+2. Open the team's action menu.
+3. Choose **Edit**.
+4. Update the name or parent details.
+5. Save your changes.
 
-## Cool Add Ons
+## View Members
 
-Got 1000+ Teams? No worries! Apply `Filter` and save time. 
-You can also `Export` your team hierarchy. Just saying.
+Open a team's members sheet to see which users belong to that team. Update memberships from the user profile when people move across teams.
 
+## Delete a Team
+
+Delete a team only after confirming it is no longer used for assignments, views, permissions, reports, or automations. If a team is referenced in active work, first move users and records to the replacement team.
+
+## Best Practices
+
+- Match the hierarchy to how managers review work.
+- Keep team names stable because they appear in filters and exports.
+- Use teams to scope work ownership; use roles to scope authority.
+- Review team membership whenever a user changes role, location, or department.
+
+## AI Guidance
+
+### When to Use This Feature
+
+An AI should use Teams when work ownership, queues, dashboards, permissions, reports, or assignments depend on departments, regions, sites, shifts, or operating units.
+
+### How to Use It
+
+1. Map the real organization hierarchy.
+2. Create teams and child teams.
+3. Assign users to the teams that own their work.
+4. Use teams in views, permissions, dashboards, and automations.
+
+### How to Verify
+
+The AI should verify that team-based views and dashboards show the correct records for users in different teams.

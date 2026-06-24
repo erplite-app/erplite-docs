@@ -1,172 +1,41 @@
 ---
-title: "User Datafields"
-description: "These are datafields defined by the user according to their needs."
----
-User Data Fields are custom data fields, where we can create data fields according our need.
-You can create data fields in the following data types:
-
-- Number
-- Text
-- Boolean
-- Date
-- List of Text
-- Image
-- Signature
-- File
-
-Apart from the above data types ERPLite also has two special data types. **List and Locations** are composite data types. They contain subfields within them.
-
-## Create Custom Data Fields
-Custom Data fields can be created from:
-2. Workflow Builder 
-3. App Screen Configuration
-
-### Creating Data Field from workflow builder
-To create data field from workflow builder, 
-
-- Click Configure Data in top left 
-- Click Create New Data field button. 
-- Fill All the required details and click create
-
-Now you can see the newly created data field under the data section.
-
-### Creating the Data Field from App Component Configuration
-The app component configuration provides an additional method of creating data fields. It is used to save data from the app component if a field does not already exist.
-
-- Drag and drop a component where the user can insert data into like Text Input, camera, signature etc...
-- Select the component in the screen
-- On the right side, you can see panel to configure the component
-- Now click Data field icon which is in the right side of Save Data to field
-- Now you can see data field pop-up with Create New Data Field Button
-- Click the Create New Data Field Button  and fill all the required details and click create button
-- Now you can see the component is bound with the newly created data field
-
-### Mapping Data field to a specific component
-While mapping a data field to a specific component, ERPLite allows only matching data types.
-
-For eg., we cannot bind a Number Data field to a Text Input component, we can only bind Number data field to a Number Input component.
-
-## Usage of Data Fields
-Data fields can be used for multiple purposes:
-- Bind Data field to a component
-- Use Data field in Conditions
-- Use Data field in Action
-
-### Bind Data field to a component
-We can bind data field to any read only components
-- Go to app builder by clicking on any screen
-- Drag and drop a component into the screen and click on the component
-- You will see options to configure the component in the right side of the screen
-- You can click the data field icon on a text display field like Label or Sub Text. 
-- The Data field modal will popup you can select data fields according to your need
-
-### Use Data field in Condition
-Conditions are used to automatically route the user to different screens based on a predefined logic.
-
-Currently we can configure conditions in ERPLite using two different types of logic.
-
-We can also write conditions based on the system data fields.
-
-Example : Only go to Screen B from Screen A, if the user belongs to a particular Team otherwise go to Screen C.
-
-### Use Data fields in Action
-In ERPLite we can define actions to be executed after a particular transition. We can configure three actions to perform after a transition.
-
-We can use the system data fields in any actions.
-Example: Send Push Notification Message to the user along with task ID.
-
+title: "User Data Fields"
+sidebarTitle: "User Data Fields"
+description: "Collect user-entered values safely during workflows."
 ---
 
-## For AI Agents
+User data fields are values users enter while creating or updating records. They should be clear, minimal, and validated.
 
-### User Data Field Structure
+## When to Add User-Entered Fields
 
-```typescript
-interface UserDataField {
-  fieldId: string;
-  name: string;
-  displayName: string;
-  type: DataFieldType;
-  defaultValue?: any;
-  isCreateTimeField: boolean;
-  isMandatory: boolean;
-  isHidden: boolean;
-}
+Add a user-entered field when:
 
-type DataFieldType =
-  | 'TEXT'
-  | 'NUMBER'
-  | 'BOOLEAN'
-  | 'DATE'
-  | 'LIST_OF_TEXT'
-  | 'IMAGE'
-  | 'SIGNATURE'
-  | 'FILE'
-  | 'LOCATION'
-  | 'LIST';
-```
+- The user is the source of truth for that information.
+- The value is needed for an action, report, or decision.
+- The field cannot be derived from another record.
+- The value should be searchable or filterable later.
 
-### API: Create Data Field
+Do not use free-text notes for important structured data.
 
-```bash
-POST /api/v1/workflows/:workflowId/datafields
-Authorization: Bearer {token}
-Content-Type: application/json
+## AI Guidance
 
-{
-  "name": "customer_name",
-  "displayName": "Customer Name",
-  "type": "TEXT",
-  "isCreateTimeField": true,
-  "isMandatory": true
-}
-```
+### When to Use This Feature
 
-### API: Update Task Data
+An AI should add user fields when a business process asks users to capture information during a step.
 
-```bash
-PATCH /api/v1/tasks/:taskId
-Authorization: Bearer {token}
-Content-Type: application/json
+### How to Use It
 
-{
-  "data": {
-    "customer_name": "John Doe",
-    "order_amount": 150,
-    "is_verified": true
-  }
-}
-```
+1. Choose the correct field type.
+2. Use clear labels.
+3. Add required or conditional required behavior where needed.
+4. Add dropdown options for controlled choices.
+5. Add column permissions for sensitive fields.
 
-### Accessing User Data
+### How to Verify
 
-```javascript
-// In scripts and expressions
-task.data.customer_name
-task.data.order_amount
-task.data.delivery_location.address
-task.data.delivery_location.latitude
+The AI should verify:
 
-// In templates
-"Hello {{task.data.customer_name}}"
-```
-
-### Data Type Constraints
-
-| Type | JS Type | Example |
-|------|---------|---------|
-| TEXT | string | "Hello World" |
-| NUMBER | number | 42.5 |
-| BOOLEAN | boolean | true |
-| DATE | string (ISO) | "2024-01-15T10:30:00Z" |
-| LIST_OF_TEXT | string[] | ["a", "b", "c"] |
-| IMAGE | string[] | ["/uploads/img1.jpg"] |
-| LOCATION | object | {address, lat, lng} |
-
-### UI Components
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| DataFieldCreator | `/src/views/workflows/datafields/Create/` | New field dialog |
-| DataFieldList | `/src/views/workflows/datafields/List/` | Field listing |
-| DataFieldPicker | `/src/components/DataFieldPicker/` | Field selection |
+- Users understand what to enter.
+- Invalid or missing values are blocked.
+- The field appears in the right views and reports.
+- Restricted users cannot see or edit sensitive values.

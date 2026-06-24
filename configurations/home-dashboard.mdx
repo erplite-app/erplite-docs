@@ -1,0 +1,81 @@
+---
+title: "Home Dashboard"
+sidebarTitle: "Home Dashboard"
+description: "Configure the ERPLite home page with operational widgets, shortcuts, queues, and action cards."
+---
+
+The Home dashboard gives users a focused starting point. Instead of searching across tables, users can see the metrics, queues, shortcuts, and actions that matter to their role.
+
+## Widget Types
+
+| Widget | Use It For |
+|--------|------------|
+| **Metric** | A single number such as Pending SOs, Late Orders, or OOS SKUs. |
+| **Trend** | A time-series chart such as sales by week or work orders completed by month. |
+| **List** | A short queue of records users should open and review. |
+| **Action** | A queue where users can take workflow-style actions from the home page. |
+| **Distribution** | A grouped breakdown, such as status-wise counts. |
+| **Comparison** | Comparing multiple metrics or periods. |
+| **Shortcut** | Quick links to tables, views, records, or URLs. |
+
+## Dashboard Assignment
+
+Dashboards can be assigned to all users, specific roles, teams, or users. This lets managers, operators, and administrators start from different views of the operation.
+
+## AI Guidance
+
+### When to Use This Feature
+
+An AI should configure Home dashboards when users need a daily operating cockpit: key counts, work queues, action lists, shortcuts, or exception cards.
+
+Use a table view when users need a full list. Use a Home widget when users need a compact summary or starting point.
+
+### How to Use It
+
+<Steps>
+  <Step title="Choose the audience">
+    Decide whether the dashboard is for all users, a role, a team, or specific users.
+  </Step>
+  <Step title="Choose the operating questions">
+    Examples: What is pending? What is late? What needs approval? What should I act on now?
+  </Step>
+  <Step title="Add widgets">
+    Use metrics for counts/sums, lists for queues, action widgets for buttons, and shortcuts for navigation.
+  </Step>
+  <Step title="Configure data sources">
+    Pick the table, filters, aggregation, grouping, sort, and row limit.
+  </Step>
+  <Step title="Configure links and actions">
+    Make widgets drill into the right table, view, record, or URL.
+  </Step>
+  <Step title="Test as the target user">
+    Confirm the dashboard answers the right questions for that user's role.
+  </Step>
+</Steps>
+
+### How to Verify
+
+The AI should verify:
+
+- Widget counts match the underlying filtered records.
+- Lists show the expected rows in the expected order.
+- Action buttons update records correctly and respect workflow guards.
+- Links open the intended table, view, record, or external page.
+- Users outside the dashboard audience do not see it when restricted.
+- Dynamic filters such as current user or current team resolve correctly.
+
+## Example Manufacturing Home
+
+A manufacturing operations dashboard might include:
+
+- Pending Sales Orders.
+- Sales this month.
+- Out-of-stock SKUs.
+- Late Sales Orders.
+- Packaging to reorder.
+- Draft POs to review.
+- Dispatches not sent out.
+- Productions to start.
+- Productions to complete.
+- Sales Order status distribution.
+- Production status distribution.

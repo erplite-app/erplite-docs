@@ -1,0 +1,77 @@
+---
+title: "Derived Fields"
+sidebarTitle: "Derived Fields"
+description: "Use formulas, lookups, and rollups to calculate values automatically."
+---
+
+Derived fields are read-only fields calculated by ERPLite. They reduce manual work and prevent users from typing values that should come from other fields or related records.
+
+## Types of Derived Fields
+
+| Type | Use It For | Example |
+|------|------------|---------|
+| **Formula** | Calculate from fields on the same record. | `quantity * unit_price` for line total. |
+| **Lookup** | Copy one value from a linked record. | Vendor GST number on a purchase order. |
+| **Rollup** | Aggregate linked child records. | Sum dispatched quantity across dispatch lines. |
+
+## When to Use Derived Fields
+
+Use derived fields when:
+
+- A value should be calculated, not typed.
+- A value should stay consistent with a related record.
+- A parent record needs totals, counts, averages, or status summaries from child records.
+- Reports need reliable calculated fields.
+- Users currently re-enter values that already exist elsewhere.
+
+## AI Guidance
+
+### When to Use This Feature
+
+An AI should choose a derived field when the business asks for "auto calculate", "copy from linked record", "sum line items", "show total", "count related records", or "keep this value in sync".
+
+### How to Use It
+
+<Steps>
+  <Step title="Choose the target field type">
+    Create or edit the field that should display the calculated value.
+  </Step>
+  <Step title="Open computed value settings">
+    In column settings, choose Formula, Lookup, or Rollup.
+  </Step>
+  <Step title="Configure the source">
+    For formulas, select fields on the same record. For lookups, choose the relation and source field. For rollups, choose the child table, link field, aggregate, and source field.
+  </Step>
+  <Step title="Save the field">
+    The derived field becomes read-only for users.
+  </Step>
+  <Step title="Test with source changes">
+    Change the input values or related records and confirm the derived value updates.
+  </Step>
+</Steps>
+
+### How to Verify
+
+The AI should verify:
+
+- Users cannot manually edit the derived value.
+- The value calculates correctly on create and edit.
+- Formula previews match expected sample values.
+- Lookup values update when the linked parent record changes.
+- Rollup values update when child records are created, edited, or deleted.
+- Reports and views show the derived values correctly.
+
+## Common Examples
+
+| Need | Recommended Derived Field |
+|------|---------------------------|
+| PO line amount | Formula: Quantity × Unit Cost |
+| PO total amount | Rollup: Sum PO line amounts |
+| Vendor payment terms on PO | Lookup from Vendor |
+| Dispatch total quantity | Rollup from Dispatch Lines |
+| Sales order dispatched quantity | Rollup from linked Dispatch Lines |
+| Remaining quantity | Formula: Ordered Quantity - Dispatched Quantity |
+
+<Warning>
+Do not use editable number fields for totals that should be controlled by line items. Use derived fields so the value stays correct after every update.
+</Warning>

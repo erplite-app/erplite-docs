@@ -1,0 +1,89 @@
+---
+title: "Manufacturing Operations Template"
+sidebarTitle: "Manufacturing"
+description: "Use ERPLite's manufacturing setup pattern for sales, procurement, production, dispatch, inventory, and reports."
+---
+
+ERPLite includes a manufacturing operations setup pattern used for accounts that need connected sales, procurement, production, dispatch, and inventory workflows.
+
+This is a business template. The exact tables, fields, workflows, dashboards, and automations can be adjusted per customer.
+
+## Typical Manufacturing Areas
+
+| Area | Example Records |
+|------|-----------------|
+| **Sales** | Sales Orders, SO Items, Customers. |
+| **Procurement** | Purchase Orders, PO Items, Vendors, GRNs. |
+| **Production** | Production Orders, Production Items, BoMs. |
+| **Dispatch** | Dispatches, Dispatch Items, courier documents. |
+| **Inventory** | SKUs, stock ledger, inventory balances, reorder recommendations. |
+| **Reports** | Operations reports, analytics, stockout risk, status summaries. |
+
+## Common Automations and Guards
+
+- Sales order creation notifications.
+- PO document generation.
+- Dispatch note generation.
+- GRN inventory updates.
+- Production item rollups.
+- Reorder recommendation creation.
+- End-of-day digest.
+- Expected delivery date guard before PO confirmation.
+- SKU deactivation cascade to BoMs.
+- Order edit and cancel propagation across connected accounts.
+
+## AI Guidance
+
+### When to Use This Template
+
+An AI should use the manufacturing pattern when the customer needs connected order-to-dispatch or procure-to-produce operations with inventory visibility.
+
+### How to Use It
+
+<Steps>
+  <Step title="Confirm business scope">
+    Identify which modules are needed: sales, procurement, production, dispatch, inventory, reports, and integrations.
+  </Step>
+  <Step title="Review table model">
+    Confirm each business object has the right table, fields, identifiers, relations, and display columns.
+  </Step>
+  <Step title="Configure workflows">
+    Add status paths and action buttons for Sales Orders, POs, Production, Dispatch, GRN, and Reorder Recommendations.
+  </Step>
+  <Step title="Configure document mappings">
+    Map source documents to target documents, such as SO to Dispatch or PO to GRN.
+  </Step>
+  <Step title="Configure automations">
+    Add document generation, inventory updates, notifications, rollups, and scheduled checks.
+  </Step>
+  <Step title="Configure home and reports">
+    Add pending queues, metrics, action lists, and analytics reports.
+  </Step>
+  <Step title="Run scenario tests">
+    Test each end-to-end scenario with sample records.
+  </Step>
+</Steps>
+
+### How to Verify
+
+The AI should verify:
+
+- A Sales Order can move through acknowledgement, production, packing, dispatch, and closure where applicable.
+- A Purchase Order can move from draft to confirmation to GRN receipt.
+- Line item quantities roll up correctly.
+- Inventory changes after GRN, production, and dispatch events.
+- Document generation creates the expected PO, dispatch, or courier documents.
+- Home dashboard queues match the underlying records.
+- Reports match the current table data.
+- Guards block invalid actions with clear messages.
+
+## Scenario Test Examples
+
+| Scenario | Proof |
+|----------|-------|
+| Create SO and acknowledge | SO status changes and pending queue updates. |
+| Create Dispatch from SO | Dispatch draft contains correct line items and source backlinks. |
+| Confirm PO with invalid date | Action is blocked with delivery date guidance. |
+| Receive GRN | Inventory ledger and stock totals update. |
+| Complete production | Production status and item rollups update. |
+| SKU deactivation | Related BoMs or active flags update as configured. |

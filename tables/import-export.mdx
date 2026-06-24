@@ -1,313 +1,113 @@
 ---
-title: "Import & Export"
-sidebarTitle: "Import & Export"
-description: "Import data from CSV files and export your table data for reporting or backup."
+title: "Import and Export"
+sidebarTitle: "Import / Export"
+description: "Create, update, validate, and export table records with CSV or Excel files."
 ---
 
-## Overview
+ERPLite supports imports and exports so teams can move operational data in and out of tables safely.
 
-ERPLite supports bulk data operations through CSV import and export, making it easy to migrate data, perform bulk updates, or create backups.
+Imports support two common business flows:
 
----
+| Mode | Use It For |
+|------|------------|
+| **Add New** | Creating new records from a CSV or Excel file. |
+| **Update Existing** | Updating existing records in bulk without recreating them. |
 
-## Importing Data
+Exports produce CSV files that can be used for audits, offline review, reconciliation, or as templates for update imports.
 
-Import records from a CSV file into your table.
-
-### Getting the Template
-
-Before importing, download the CSV template to ensure your data matches the table structure.
+## Import Flow
 
 <Steps>
-  <Step title="Open Import Menu">
-    Click the **More Options** menu (three dots) in the table toolbar
+  <Step title="Open the table">
+    Go to the table you want to import into.
   </Step>
-  <Step title="Download Template">
-    Click **Download Template** to get a CSV file with column headers matching your table
+  <Step title="Choose Import CSV / Excel">
+    Open the table actions menu and select **Import CSV / Excel**.
   </Step>
-  <Step title="Fill in Data">
-    Open the template in Excel/Google Sheets and add your data
+  <Step title="Choose Add New or Update Existing">
+    Use **Add New** for new records and **Update Existing** when rows should change records already in ERPLite.
+  </Step>
+  <Step title="Upload a file">
+    Upload a CSV or Excel file. Keep each import to a practical row count so errors are easy to review.
+  </Step>
+  <Step title="Map columns">
+    Match file columns to ERPLite fields. ERPLite suggests matches based on names.
+  </Step>
+  <Step title="Map option values">
+    For dropdown, status, choice, or multi-choice fields, confirm file values map to valid ERPLite options.
+  </Step>
+  <Step title="Validate">
+    Review errors before import. Fix missing required fields, invalid formats, relation mismatches, and duplicate rows.
+  </Step>
+  <Step title="Confirm import">
+    Enter the email address that should receive the result file, then run the import.
   </Step>
 </Steps>
 
-### Template Structure
+## Supported Data Patterns
 
-The template includes headers for each column in your table:
+| Field Type | Import Guidance |
+|------------|-----------------|
+| **Text** | Use plain text. |
+| **Numbers, currency, percent** | Use numeric values without extra labels. |
+| **Dates** | Use a consistent date format in the file. |
+| **Dropdown/status/choice** | Values must match or be mapped to configured options. |
+| **Relations** | Use readable related record names or identifiers that can be matched. |
+| **Users/teams** | Use values that clearly identify the user or team. |
+| **Files/images** | Use accessible URLs where file/image import is supported. |
 
-```csv
-name,email,phone,status,created_date
-John Doe,john@example.com,555-0100,Active,2024-01-15
-Jane Smith,jane@example.com,555-0101,Pending,2024-01-16
-```
+## Update Existing Records
 
-<Note>
-Column headers must match exactly. Use the downloaded template to ensure compatibility.
-</Note>
+Use update imports when the records already exist and a spreadsheet contains changes. The import should include a reliable way to match each row to the existing record, such as an ID, record number, or another agreed unique value.
 
-### Importing the File
+Update imports are useful for:
 
-<Steps>
-  <Step title="Open Import">
-    Click the **More Options** menu and select **Import**
-  </Step>
-  <Step title="Select File">
-    Click **Select File** and choose your CSV file
-  </Step>
-  <Step title="Select Header Row">
-    Specify which row contains your column headers (usually row 1)
-  </Step>
-  <Step title="Map Columns">
-    Map CSV columns to table columns. The system auto-maps matching names.
-  </Step>
-  <Step title="Validate Data">
-    Review any validation errors:
-    - **Red rows**: Data doesn't match column type
-    - Fix errors or click **Discard Selected Rows** to skip them
-  </Step>
-  <Step title="Complete Import">
-    Click **Confirm** to import the validated records
-  </Step>
-</Steps>
+- Updating expected delivery dates.
+- Correcting pricing or quantities.
+- Updating statuses from an external reconciliation file.
+- Filling missing fields after initial migration.
 
-### Field Format Reference
+## Import Results
 
-Every column type expects a specific cell format. Use this table when preparing your file — getting the format right up front avoids validation errors.
+Large or partial imports can continue in the background. ERPLite sends a result CSV to the chosen email address so the user can see which rows succeeded, which failed, and why.
 
-| Column Type | Expected Format | Example | Empty cell |
-|-------------|-----------------|---------|------------|
-| Text / Textarea | Plain text | `John Doe` | Cleared (left blank) |
-| Number / Currency / Percent | A number only — no symbols, no thousands separators | `1234.50` (not `$1,234.50`) | Cleared |
-| Boolean | `true`/`false`, `yes`/`no`, or `1`/`0` | `true` | Cleared |
-| Date | `YYYY-MM-DD` | `2024-01-15` | Cleared |
-| DateTime | ISO 8601 | `2024-01-15T10:30:00` | Cleared |
-| Email | A valid email address | `john@example.com` | Cleared |
-| Phone | Plain text (digits, `+`, spaces) | `+1 555 0100` | Cleared |
-| URL | A single valid URL (includes `https://`) | `https://acme.com` | Cleared |
-| Choice | Exact option text (case-sensitive) | `Pending` | Cleared |
-| Multi-Select | Comma-separated option text | `Tag1, Tag2, Tag3` | Cleared |
-| List of Text | Comma-separated values | `item1, item2, item3` | Cleared |
-| Location | `address, lat, long` | `123 Main St, 37.77, -122.41` | Cleared |
-| **File / Image** | **One URL, or several URLs separated by commas** | `https://cdn.acme.com/a.pdf` or `https://cdn.acme.com/a.pdf, https://cdn.acme.com/b.pdf` | **Set to empty (no file)** |
-| **Relation** | **The target record's display name, or its record ID** | `Acme Corp` or `rec_abc123` | Cleared (link removed) |
-| User / Team | The user/team's name (resolution is best-effort — use the ID if a name doesn't resolve) | `Priya Sharma` | Cleared |
+## AI Guidance
 
-<Note>
-Computed, button, and signature columns are read-only on import — values in those columns are ignored.
-</Note>
+### When to Use This Feature
 
-### Import Tips
+An AI should use import when:
 
-<AccordionGroup>
-  <Accordion title="File & Image fields (URLs)">
-    File and image columns store **URLs**, and a record can hold more than one.
+- Initial setup requires many records.
+- Business users provide master data in spreadsheets.
+- Existing records need bulk correction.
+- A recurring process exports data from another system and loads it into ERPLite.
 
-    - **One file**: put a single URL in the cell — `https://cdn.acme.com/invoice.pdf`
-    - **Multiple files**: separate the URLs with commas — `https://cdn.acme.com/a.pdf, https://cdn.acme.com/b.pdf`
-    - **No file**: leave the cell empty — the field is stored as empty (it will not error)
+An AI should avoid import when there are only a few records and manual creation is faster and easier to verify.
 
-    Each value must be a valid URL (starting with `http://` or `https://`). A value that isn't a URL is flagged on the row.
-  </Accordion>
+### How to Use It
 
-  <Accordion title="Relation fields (name vs. record ID)">
-    A relation cell can be either:
+1. Ask the user whether the file should **create** or **update** records.
+2. Confirm the target table.
+3. Review the file headers before upload.
+4. Map each file column to an ERPLite field.
+5. Resolve option values and relation matches.
+6. Run validation.
+7. Fix errors before confirming.
+8. Confirm the result email.
+9. Review the result CSV after import.
 
-    - the target record's **display name** (e.g. `Acme Corp`), or
-    - its **record ID** (e.g. `rec_abc123`).
+### How to Verify
 
-    For a **multi-link** relation, separate several values with commas: `Acme Corp, Globex`.
+The AI should verify:
 
-    If a display name matches **more than one** record, the importer can't tell which one you mean. It will ask you to **use the record ID** for that cell instead — the record ID is always unique. (Tip: export the related table first to get each record's ID.)
-  </Accordion>
-
-  <Accordion title="Handling Date Formats">
-    Dates should be in `YYYY-MM-DD` format. Other formats may cause validation errors.
-  </Accordion>
-
-  <Accordion title="Location Fields">
-    For location fields, provide address, latitude, and longitude separated by commas:
-    `123 Main St, 37.7749, -122.4194`
-  </Accordion>
-
-  <Accordion title="Choice Fields">
-    Values must exactly match one of the defined options (case-sensitive).
-  </Accordion>
-</AccordionGroup>
-
----
-
-## Exporting Data
-
-Export your table data to CSV for reporting, backup, or analysis.
-
-<Steps>
-  <Step title="Apply Filters (Optional)">
-    Use filters to export only specific records
-  </Step>
-  <Step title="Open Export">
-    Click the **More Options** menu and select **Export**
-  </Step>
-  <Step title="Download File">
-    The CSV file downloads automatically
-  </Step>
-</Steps>
-
-### Export Limits
+- The imported row count matches the expected count.
+- Failed rows have clear reasons and are not silently ignored.
+- Relation fields link to the correct records.
+- Dropdown/status values use valid options.
+- File/image URL fields render as attachments or previews where applicable.
+- Update imports changed the intended existing records and did not create duplicates.
+- Views and reports that depend on the imported data now show correct results.
 
 <Warning>
-Exports are limited to **1,000 records** at a time. For larger datasets:
-1. Apply filters to narrow down the data
-2. Export in batches
-3. Or use the API for programmatic export without limits
+Do not run a bulk update import until the matching field is clear. If matching is ambiguous, create a small test import first and verify the exact records that changed.
 </Warning>
-
-### Exporting with Filters
-
-To export a subset of your data:
-
-1. Apply filters to show only the records you want
-2. The export will only include visible (filtered) records
-3. This also helps when you have more than 1,000 records
-
-### Export Format
-
-Exported CSV files include:
-- All visible columns (hidden columns are excluded)
-- Current filter state applied
-- All data types converted to text representation
-
----
-
-## For AI Agents
-
-### API: Bulk Import Records
-
-```bash
-POST /zorp-tables-service/table/records
-Authorization: Bearer {secretKey}
-Content-Type: application/json
-
-{
-  "tableType": "my_table",
-  "records": [
-    {
-      "data": {
-        "name": "John Doe",
-        "email": "john@example.com",
-        "status": "Active"
-      }
-    },
-    {
-      "data": {
-        "name": "Jane Smith",
-        "email": "jane@example.com",
-        "status": "Pending"
-      }
-    }
-  ]
-}
-```
-
-**Response:**
-```json
-{
-  "code": "200",
-  "message": "2 records created successfully",
-  "data": {
-    "created": 2,
-    "failed": 0,
-    "recordIds": ["rec_123", "rec_124"]
-  }
-}
-```
-
-### API: Export Records (Paginated)
-
-```bash
-POST /zorp-tables-service/table/search
-Authorization: Bearer {secretKey}
-Content-Type: application/json
-
-{
-  "tableTypes": ["my_table"],
-  "page": 0,
-  "size": 100,
-  "filters": [],
-  "sorting": []
-}
-```
-
-**Response:**
-```json
-{
-  "code": "200",
-  "data": {
-    "records": [...],
-    "total": 1500,
-    "page": 0,
-    "size": 100
-  }
-}
-```
-
-### Batch Export Pattern
-
-For exporting more than 1,000 records programmatically:
-
-```javascript
-async function exportAllRecords(tableType, secretKey) {
-  const allRecords = [];
-  let page = 0;
-  const pageSize = 100;
-  let hasMore = true;
-
-  while (hasMore) {
-    const response = await fetch('/zorp-tables-service/table/search', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${secretKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        tableTypes: [tableType],
-        page: page,
-        size: pageSize
-      })
-    });
-
-    const data = await response.json();
-    allRecords.push(...data.data.records);
-
-    hasMore = allRecords.length < data.data.total;
-    page++;
-  }
-
-  return allRecords;
-}
-```
-
-### Import Validation
-
-The import process validates:
-- **Type matching**: Values match column data types
-- **Required fields**: All required columns have values
-- **Choice validation**: Values match defined options
-- **Relation validation**: Referenced records exist. A value that can't be matched to a record returns guidance to **use the record ID to disambiguate** (a display name may be missing or match more than one record).
-- **File / Image normalization**: A single URL, a comma-separated list, or a JSON array of URLs is accepted and stored as an array; an empty cell is stored as empty (no error). Each value must be a valid URL.
-
-### UI Elements
-
-| Action | Location | Icon |
-|--------|----------|------|
-| Import | More Options menu | Upload icon |
-| Export | More Options menu | Download icon |
-| Download Template | Import modal | Download icon |
-
-### Event Tracking
-
-```typescript
-TableRSEvents.BULK_IMPORT_BUTTON_CLICKED
-TableRSEvents.BULK_IMPORT_RECORDS_SUCCESS
-TableRSEvents.BULK_IMPORT_RECORDS_FAILURE
-TableRSEvents.DOWNLOAD_TEMPLATE_CSV_BUTTON_CLICKED
-TableRSEvents.EXPORT_CSV_BUTTON_CLICKED
-```
