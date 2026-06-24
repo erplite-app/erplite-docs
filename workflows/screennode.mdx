@@ -1,112 +1,39 @@
 ---
-title: "Screen Node"
-description: "Each screen node corresponds to one screen of the ERPLite mobile app. "
+title: "Screens"
+sidebarTitle: "Screens"
+description: "Design screens and forms that help users complete one business step at a time."
 ---
 
-Let's consider a scenario where the sales person is collecting data from their client. There are multiple steps in this process like travel, visit, data collection, verification etc. Here, Data collection is a step in the workflow and there is a mobile app screen that corresponds to this step.
+Screens are the user-facing forms and layouts where work gets done. In table-driven ERPLite setups, screens usually correspond to create forms, record detail pages, and related record tabs.
 
-A screen node has multiple properties, they are defined below.
+## Good Screen Design
 
-**Screen Name:​**
-Each screen has a name that it can be identified with. The name of the screen is shown to the user so they're aware of which screen of the process they are in.
+- Show only fields needed for the current task.
+- Use sections or tabs for complex records.
+- Put decision-driving fields near the top.
+- Hide read-only system fields unless they help the user.
+- Use conditional fields to keep forms short.
+- Use relations and inline child tables for line items.
 
-**Screen Description:​**
-Description is provided for clarity on what a screen node means.
+## AI Guidance
 
-## How To Connect Two screen nodes in a Workflow?
+### When to Use This Feature
 
-Right-click and drag on the blue box of the the first Screen Node (the Screen Node from which you want to connect it from) and connect it to the blue box of the second Screen Node (the Screen Node to which you want to connect it to).
+An AI should adjust screens when users say a form is confusing, too long, missing fields, or showing fields at the wrong time.
 
-You will notice that a curve line has formed on the screen, which implies that the two Screen nodes have been connected.
+### How to Use It
 
-## Components
-Components are UI elements that can be used to design the screen of the mobile app.
-There are over multiple UI components in ERPLite with which our users can design really powerful applications easily.
+1. Identify the user role and task.
+2. List the fields required for that step.
+3. Hide, lock, or require fields conditionally.
+4. Put related child records in tabs or inline tables.
+5. Test with a real user scenario.
 
-UI Elements are higher order ready made components with which development of a screen becomes very easy.
-For eg., for a user to collect images from the app or show a map location, all they have to do is to drag and drop the component into the app screen and change the configurations on the config tab.
+### How to Verify
 
-### Component Configuration​
-Each component has its own way of configuration. For eg., a text display component only takes a text as an input. Whereas the camera component has options to specific collection mode via camera or gallery, no of images that need to be collected and many more.
+The AI should verify:
 
-### Working with data
-
-Components can both read from and write to data fields:
-- **Read**: Display components pull values from data fields
-- **Write**: Input components save user entries to data fields
-
----
-
-## Screen Properties
-
-| Property | Description |
-|----------|-------------|
-| **Screen Name** | Identifier shown to users |
-| **Description** | Internal notes about the screen's purpose |
-| **Components** | UI elements on the screen |
-| **On-Load Automations** | Actions triggered when screen loads |
-
----
-
-## For AI Agents
-
-### Screen Node Structure
-
-```typescript
-interface ScreenNode {
-  nodeId: string;
-  type: 'SCREEN';
-  name: string;
-  description?: string;
-  isInitial: boolean;
-  isTerminal: boolean;
-  components: Component[];
-  onLoadAutomations: Automation[];
-}
-
-interface Component {
-  componentId: string;
-  type: ComponentType;
-  config: ComponentConfig;
-  dataFieldBinding?: string;
-  visibility?: VisibilityCondition;
-}
-```
-
-### Component Types
-
-```typescript
-type ComponentType =
-  | 'TEXT_DISPLAY'
-  | 'TEXT_INPUT'
-  | 'NUMBER_INPUT'
-  | 'DROPDOWN'
-  | 'RADIO'
-  | 'CHECKBOX'
-  | 'CAMERA'
-  | 'SIGNATURE'
-  | 'FILE_UPLOAD'
-  | 'DATE_PICKER'
-  | 'LOCATION'
-  | 'MAP'
-  | 'BUTTON';
-```
-
-### UI Components
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| ScreenNodeEditor | `/src/views/workflows/nodes/ScreenNode/` | Screen node configuration |
-| AppBuilder | `/src/views/appBuilder/` | Visual screen designer |
-| ComponentPalette | `/src/views/appBuilder/ComponentPalette/` | Draggable components |
-| ComponentConfig | `/src/views/appBuilder/ComponentConfig/` | Component properties |
-
-### Event Tracking
-
-```typescript
-// Screen node events
-WorkflowEvents.SCREEN_NODE_CREATED
-WorkflowEvents.SCREEN_NODE_UPDATED
-WorkflowEvents.SCREEN_COMPONENT_ADDED
-WorkflowEvents.SCREEN_COMPONENT_REMOVED
-```
+- Users can complete the step without unrelated fields.
+- Required fields are obvious.
+- Conditional fields appear only when needed.
+- Target users can complete the screen from the supported ERPLite dashboard experience.

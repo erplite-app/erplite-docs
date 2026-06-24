@@ -3,38 +3,80 @@ title: Introduction to ERPLite
 description: "Building blocks to design your Operational OS for complex on ground and desk operations."
 ---
 
-Welcome to the ERPLite Documentation. Your resource hub on all things ERPLite. You can find all the resources on how to build, manage and modify your workflows here. This is a continuous work in progress. We appreciate any input on how to make this better.
+ERPLite helps operations teams run structured work: store operational data, assign work to teams, automate routine steps, monitor exceptions, and review performance from one workspace.
+
+These docs are written for business users and administrators. Use them to understand what each area does, how to configure it safely, and how your team should use it day to day.
 
 <CardGroup cols={2}>
-  <Card title="Tables" icon="palette" href="tables/acl">
-    A single source of truth for your end to end operations
+  <Card title="AI Setup Guide" icon="sparkles" href="/ai-setup/end-to-end">
+    Use an AI assistant to plan, configure, and verify ERPLite end to end.
   </Card>
-  <Card
-    title="Alerts & Monitoring"
-    icon="code"
-    href="https://mintlify.com/docs/api-playground/openapi"
-  >
-    Let ERPLite Alerts detect and resolve incidents in your ops for you
+  <Card title="Tables" icon="table" href="/tables/overview">
+    Create the operational records your teams work with every day.
   </Card>
-  <Card
-    title="Sharing an Permissions"
-    icon="screwdriver-wrench"
-    href="https://mintlify.com/docs/components/accordion"
-  >
-    Share your data with your team and customers
+  <Card title="Workflows" icon="git-branch" href="/workflows/workflows">
+    Define statuses, actions, guardrails, and approvals for business processes.
   </Card>
-  <Card
-    title="No-Code Ops Apps"
-    icon="screwdriver-wrench"
-    href="https://mintlify.com/docs/components/accordion"
-  >
-     Transform your ops, connected to your tools and powered with automation.
+  <Card title="Home Dashboards" icon="layout-dashboard" href="/configurations/home-dashboard">
+    Put the most important work queues, metrics, shortcuts, and actions on the home page.
   </Card>
-  <Card
-    title="Workflows & Process Automation"
-    icon="stars"
-    href="https://mintlify.com/customers"
-  >
-    Automate your ops processes and workflows using our no-code suite.
+  <Card title="Reports" icon="chart-no-axes-combined" href="/reports/overview">
+    Review live operational reports, stockout risks, and embedded dashboards.
+  </Card>
+  <Card title="Users, Teams, and Roles" icon="users" href="/usermanagement">
+    Control who can access each part of your workspace.
+  </Card>
+  <Card title="Automations" icon="bolt" href="/tables/automations">
+    Send emails, update records, call external systems, and keep data in sync.
   </Card>
 </CardGroup>
+
+## How ERPLite is Organized
+
+| Area | Use it for |
+|------|------------|
+| **Tables** | Your business objects: purchase orders, assets, work orders, customers, inventory, dispatches, or any other records. |
+| **Records** | Individual rows inside a table. Records can have comments, files, related records, workflow status, activity history, and automation-driven fields. |
+| **Views** | Saved ways of looking at records, such as "My open work", kanban by status, grouped queues, or filtered lists for a team. |
+| **Workflows** | Status paths and action buttons that guide a record from one business stage to another. |
+| **Automations** | Rules that run when records change, on a schedule, through a webhook, or from a workflow action. |
+| **Configurations** | Business setup areas for workflows, automations, document mappings, display preferences, and home dashboards. |
+| **Settings** | Account, users, roles, teams, API keys, Slack, and workspace-level settings. |
+
+## Recommended Starting Point
+
+<Steps>
+  <Step title="Set up access">
+    Add your teams, roles, and users first. A clean access model makes later table permissions easier to manage.
+  </Step>
+  <Step title="Create or review tables">
+    Confirm the tables, columns, relation fields, and views match the way your team talks about the process.
+  </Step>
+  <Step title="Add workflow status and actions">
+    Use workflows to show the current stage of a record and the next available actions.
+  </Step>
+  <Step title="Automate repeated work">
+    Start with simple notifications or field updates, then add document generation, external integrations, and scheduled checks.
+  </Step>
+  <Step title="Publish reports and home widgets">
+    Give each team a practical home page and reports that help them spot work that needs attention.
+  </Step>
+</Steps>
+
+<Tip>
+If you are setting up a live operation, document one real business process end to end before adding advanced automations. That makes permissions, field names, and reports easier to validate with users.
+</Tip>
+
+## How AI Should Use These Docs
+
+Each major feature guide includes three practical sections for AI-assisted setup:
+
+| Section | What the AI should learn |
+|---------|--------------------------|
+| **When to use it** | The business situation where this ERPLite feature is the right tool. |
+| **How to use it** | The configuration steps to perform in ERPLite. |
+| **How to verify** | The checks that prove the setup works for real users and real records. |
+
+When using AI to configure ERPLite, do not ask it to "set everything up" in one vague instruction. Give it the business process, the tables involved, the users or teams, the desired workflow stages, sample records, and what a successful outcome should look like.
+
+Start with [AI-Assisted ERPLite Setup](/ai-setup/end-to-end) for the end-to-end pattern.

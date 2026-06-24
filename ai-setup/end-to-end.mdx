@@ -1,0 +1,129 @@
+---
+title: AI-Assisted ERPLite Setup
+description: "Use AI to choose ERPLite features, configure them, and verify an operation end to end."
+---
+
+AI is the recommended way to set up and maintain a serious ERPLite workspace. A good AI setup process does not jump straight into configuration. It first understands the business process, chooses the right ERPLite feature for each need, applies changes in small steps, and verifies each result with sample records.
+
+This guide is written for an AI assistant and the business user supervising it.
+
+## The AI Setup Contract
+
+Before making changes, the AI should confirm:
+
+| Question | Why it matters |
+|----------|----------------|
+| **What process are we setting up?** | Defines the tables, workflow stages, roles, and reports needed. |
+| **Who does the work?** | Defines users, teams, roles, permissions, and assignments. |
+| **What records move through the process?** | Defines tables, columns, relations, and imports. |
+| **What decisions or approvals happen?** | Defines workflow actions, guards, validations, and status changes. |
+| **What should happen automatically?** | Defines automations, notifications, document generation, rollups, and integrations. |
+| **How will we know it works?** | Defines test records, expected views, report checks, and acceptance criteria. |
+
+## Feature Decision Matrix
+
+Use this matrix to decide which ERPLite feature to configure.
+
+| Business Need | Use This Feature | Verify By |
+|---------------|------------------|-----------|
+| Store a business object such as orders, assets, inventory, customers, or dispatches | **Table** | Create a sample record and confirm required fields, display fields, and relations are usable. |
+| Track stages such as Draft, Confirmed, In Production, Dispatched, Received, or Closed | **Workflow** | Move a sample record through each allowed action and confirm the status bar updates. |
+| Show only the records a team works on daily | **View** | Open the view as the target user or role and confirm only the right records appear. |
+| Make fields appear only in the right situation | **Conditional field rules** | Change the controlling field and confirm dependent fields show, hide, lock, or require input correctly. |
+| Calculate totals, copied values, counts, or status summaries | **Derived fields** | Edit related source records and confirm formula, lookup, or rollup values update. |
+| Prevent bad actions, such as confirming without a delivery date | **Workflow guards or validations** | Try a failing record and confirm ERPLite blocks the action with clear guidance. |
+| Send messages, update records, generate documents, or call another system | **Automation** | Trigger the event and confirm the message, record update, document, or external result happened. |
+| Create records from another document, such as SO to dispatch or PO to GRN | **Document mapping** | Pull items from a source record and confirm the target draft has the right header and line items. |
+| Give managers a live operating view | **Home dashboard or Reports** | Compare the dashboard counts/lists against the underlying records. |
+| Restrict sensitive data | **Role, table, view, column, and record permissions** | Test with a user who should have access and one who should not. |
+| Prepare desk users to execute assigned work | **Views, workflow actions, and home dashboard queues** | Sign in as the target user and complete one sample record action. |
+
+## End-to-End Setup Flow
+
+<Steps>
+  <Step title="Map the operation">
+    Ask the business user for the process name, teams, roles, record types, status stages, actions, reports, and examples of real records.
+  </Step>
+  <Step title="Design the tables">
+    Create or update tables for the key business objects. Add fields for identifiers, owner teams, dates, status, amounts, documents, and relations.
+  </Step>
+  <Step title="Create relationships">
+    Link records that belong together, such as purchase orders to vendors, GRNs to purchase orders, sales orders to customers, dispatches to sales orders, or work orders to assets.
+  </Step>
+  <Step title="Configure views">
+    Build saved views for daily work: open items, overdue items, assigned to me, by status, by team, and exception queues.
+  </Step>
+  <Step title="Set permissions">
+    Configure users, teams, roles, table access, column access, and view access. Verify with at least one manager and one operator.
+  </Step>
+  <Step title="Add workflow stages and actions">
+    Configure the statuses and buttons that move records through the process. Add guards where users should not be allowed to proceed without required business conditions.
+  </Step>
+  <Step title="Add automations">
+    Configure notifications, record updates, document generation, rollups, scheduled checks, and external integrations only after the core workflow works manually.
+  </Step>
+  <Step title="Create home dashboards and reports">
+    Add shortcuts, action queues, metrics, lists, and management reports that help users run the process without searching through every table.
+  </Step>
+  <Step title="Run acceptance tests">
+    Use sample records to test the complete path from creation to closure, including permissions, workflow actions, automations, reports, and dashboard queues.
+  </Step>
+</Steps>
+
+## AI Prompt Template
+
+Use this template when asking an AI to set up a process:
+
+```text
+Set up ERPLite for this business process:
+
+Process:
+Teams and roles:
+Tables/records involved:
+Important fields:
+Workflow stages:
+Actions users should take:
+Actions that should be blocked:
+Automations needed:
+Reports/home dashboard needed:
+Sample records to test with:
+Definition of success:
+
+For each step, tell me:
+1. Which ERPLite feature you are using and why.
+2. What you changed.
+3. How you verified it.
+4. What still needs business approval.
+```
+
+## Verification Checklist
+
+The AI should not call setup complete until these checks pass:
+
+- A sample record can be created with the required fields.
+- Related records display with readable names, not unreadable IDs.
+- Saved views show the right records for the right team.
+- Users with different roles see the correct tables, columns, views, and actions.
+- Workflow buttons appear only when the action is allowed.
+- Guarded actions fail with a clear message when required business conditions are missing.
+- Automations run after the intended trigger and leave visible proof.
+- Generated documents contain the right record data.
+- Reports and home widgets match the underlying table records.
+- Target users can sign in and perform the required work from the supported ERPLite dashboard experience.
+
+## Handoff Notes
+
+After setup, the AI should leave a short handoff note for the business owner:
+
+- What was configured.
+- Which sample records were used.
+- Which checks passed.
+- Which assumptions were made.
+- What needs approval before rollout.
+- What should be monitored in the first week.
+
+## Future SDK-Based Setup
+
+Today, the safest setup pattern is AI-guided configuration with visible verification in the ERPLite workspace. As ERPLite's SDK setup capabilities expand, this guide can be extended so AI can generate repeatable setup plans, apply configuration in bulk, and produce an audit trail of every change.
+
+Even when SDK automation is available, the same rule should remain: every change needs a business reason, a clear configuration step, and a verification check.

@@ -1,0 +1,65 @@
+---
+title: "Conditional Fields"
+sidebarTitle: "Conditional Fields"
+description: "Show, lock, or require fields based on other field values."
+---
+
+Conditional field rules change how a field behaves based on the values of other fields. They make forms shorter, safer, and more business-aware.
+
+## Rule Types
+
+| Rule | What It Does | Example |
+|------|--------------|---------|
+| **Show when** | Shows the field only when a condition is true. | Show Rejection Reason only when Decision is Rejected. |
+| **Lock when** | Makes the field read-only when a condition is true. | Lock Amount after Status is Approved. |
+| **Require when** | Makes the field mandatory when a condition is true. | Require Dispatch Date when Status is Ready to Dispatch. |
+
+Lock and required rules are enforced on every save, not just in the screen. This helps protect data even when records are changed through imports, automations, or AI-assisted operations.
+
+## AI Guidance
+
+### When to Use This Feature
+
+An AI should use conditional fields when:
+
+- A field is only relevant for certain statuses or categories.
+- Users should not change a field after approval or confirmation.
+- A field should be required only in specific scenarios.
+- A form is too long because every possible field is always visible.
+
+### How to Use It
+
+<Steps>
+  <Step title="Open the column settings">
+    Edit the field that should become conditional.
+  </Step>
+  <Step title="Open Conditional Rules">
+    Choose whether the field should be shown, locked, or required.
+  </Step>
+  <Step title="Build the condition">
+    Select the controlling field, operator, and value.
+  </Step>
+  <Step title="Add an error message if enforced">
+    For locked or required rules, provide a message that tells users what to fix.
+  </Step>
+  <Step title="Save and test">
+    Try records that should pass and records that should fail.
+  </Step>
+</Steps>
+
+### How to Verify
+
+The AI should verify:
+
+- The field appears only under the intended condition.
+- The field locks when the lock condition is true.
+- The field is required only when the required condition is true.
+- Save is blocked with a useful message when required data is missing.
+- Imports or automations cannot bypass enforced locked/required behavior.
+
+## Best Practices
+
+- Use conditional visibility to keep forms clean.
+- Use locking for approved, confirmed, completed, or system-owned fields.
+- Use conditional required rules for process-specific requirements.
+- Keep error messages business-friendly and specific.

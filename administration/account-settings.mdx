@@ -1,0 +1,67 @@
+---
+title: Account Settings
+description: "Manage workspace details, timezone, and account-level integrations."
+---
+
+Use **Settings > Account** for workspace-level details that affect every user.
+
+## General Settings
+
+| Setting | What it controls |
+|---------|------------------|
+| **Account ID** | The unique ID for this workspace. You may need it when coordinating with ERPLite support. |
+| **Workspace URL** | The subdomain users should use to sign in to this account. |
+| **Account Name** | The business name displayed for the workspace. |
+| **Default Timezone** | The timezone used by schedules, cron automations, reports, and date/time displays that rely on account settings. |
+
+<Tip>
+Set the default timezone before configuring scheduled automations. This keeps daily digests, reminders, and operational cutoffs aligned with your business day.
+</Tip>
+
+## Slack Integration
+
+Connect Slack when your automations should send messages to channels or users.
+
+<Steps>
+  <Step title="Open Account Settings">
+    Go to **Settings > Account**.
+  </Step>
+  <Step title="Connect Slack">
+    Click **Add to Slack** and approve the requested workspace permissions.
+  </Step>
+  <Step title="Use Slack in automations">
+    Configure Send Slack Message actions in automations after the account shows as connected.
+  </Step>
+</Steps>
+
+If Slack is disconnected, automations that send Slack messages stop working until it is reconnected.
+
+## When to Update Account Settings
+
+- Your company name changes.
+- Users are signing in through a new workspace URL.
+- Scheduled automations are running at the wrong local time.
+- You are rolling out Slack notifications or changing Slack workspace access.
+
+## Best Practices
+
+- Keep the account timezone aligned to the primary operations timezone.
+- Copy the Account ID only when needed for support or integration setup.
+- Test one Slack automation after connecting or reconnecting Slack.
+
+## AI Guidance
+
+### When to Use This Feature
+
+An AI should use Account Settings when timezone, workspace identity, account name, Slack connection, or support coordination is part of setup.
+
+### How to Use It
+
+1. Confirm account name and workspace URL.
+2. Set the default timezone before scheduled automations are created.
+3. Connect Slack before configuring Slack notifications.
+4. Save changes and test the affected behavior.
+
+### How to Verify
+
+The AI should verify that scheduled actions use the intended timezone and Slack automations can post successfully when Slack is connected.

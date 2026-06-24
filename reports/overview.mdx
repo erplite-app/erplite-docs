@@ -1,0 +1,73 @@
+---
+title: "Reports"
+sidebarTitle: "Reports"
+description: "Use ERPLite reports to review operational performance, exceptions, and analytics."
+---
+
+Reports give managers and teams a structured way to review operational performance. ERPLite supports native reports and embedded analytics dashboards.
+
+## Report Types
+
+| Report Type | Use It For |
+|-------------|------------|
+| **Native report** | ERPLite-rendered reports such as stockout risk or spec-driven operations reports. |
+| **Embedded analytics** | Metabase dashboards and cards embedded inside ERPLite. |
+| **Spec-driven report** | A configured report layout with tabs, date ranges, cards, and tables. |
+
+## Common Report Needs
+
+- Stockout risk and recommended actions.
+- Operations summary by date range.
+- Sales order status and delays.
+- Production progress.
+- Purchase order and GRN status.
+- Inventory movement and reorder planning.
+- Work order completion and overdue work.
+
+## AI Guidance
+
+### When to Use This Feature
+
+An AI should create or update reports when the business asks for management review, trend analysis, exception monitoring, or recurring operational summaries.
+
+Use Home dashboard widgets for daily action. Use Reports for deeper analysis and review.
+
+### How to Use It
+
+<Steps>
+  <Step title="Define the business question">
+    Example: "Which SKUs are at stockout risk?" or "Which sales orders are late?"
+  </Step>
+  <Step title="Identify source tables">
+    Choose the tables and fields needed for the answer.
+  </Step>
+  <Step title="Choose report type">
+    Use native/spec reports for ERPLite-rendered reports and embedded analytics for existing dashboards.
+  </Step>
+  <Step title="Add filters">
+    Include date range, status, team, customer, vendor, or category filters where needed.
+  </Step>
+  <Step title="Publish and test">
+    Open the report, adjust filters, and compare results with underlying records.
+  </Step>
+</Steps>
+
+### How to Verify
+
+The AI should verify:
+
+- The report opens from the Reports list.
+- Date-range filters change the results.
+- Tabs, cards, and tables show data from the correct sources.
+- Names display clearly instead of raw relation IDs.
+- Results match the filtered records in the source tables.
+- Report access matches the intended user audience.
+
+## Report Review Checklist
+
+- What decision should this report support?
+- Who reviews it?
+- How often is it used?
+- Which records should be included?
+- Which statuses or exceptions should be excluded?
+- What action should a user take after seeing it?

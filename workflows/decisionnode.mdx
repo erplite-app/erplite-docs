@@ -1,130 +1,40 @@
 ---
-title: "Decision Node"
-description: "Transition between screens using automatic if-else conditions."
+title: "Decisions"
+sidebarTitle: "Decisions"
+description: "Route records through different paths based on business conditions."
 ---
 
-## What is a Decision Node?​
+Decision logic controls which path a record should take. In ERPLite, decisions are commonly implemented with workflow guards, transition visibility, validations, automations, and conditional fields.
 
-Have you ever felt the need to show different screens to the user depending on the work progress without the user specifically choosing it? You can now do that in ERPLite using the Decision Node. Decision nodes help users to navigate to different screens programmatically through a simple if-else method.
+## Decision Examples
 
-For Example : A Particular agent has met an appointed customer and needs to enter it in the designated app. The app will prompt two possible options : “Met'' or “Not Met”. He will click on the “Met” Option. The agent will now be prompted to the “Congratulations, keep it up!” screen. Had the agent not met the customer and clicked on the “Not Met” Option, he would have been prompted to the “Uh no, Pending Customer!” Screen.
+| Decision | ERPLite Setup |
+|----------|---------------|
+| Amount above approval limit | Show Submit for Approval instead of Confirm. |
+| Inventory unavailable | Block Dispatch and show a clear message. |
+| Order cancelled | Hide production and dispatch actions. |
+| Work order high priority | Route to manager queue and send alert. |
+| Rejected approval | Require rejection reason and move to Rejected status. |
 
-So now, How do we automatically show the right screen to the user, based on the data we have collected? That is where the Decision Node comes into play!
+## AI Guidance
 
-### How to use the Decision Node :
+### When to Use This Feature
 
-1.  Open Your Existing Workflow in which you would like to insert your Decision Node. (Click here to know - How to Create a Workflow)
+An AI should add decision logic when a process can branch based on field values, user role, team, dates, related records, or external checks.
 
-2.  Click on the “Create Node” Option located on the right portion of the Navigation Bar. It will show you two options - “Step Node” and “Decision Node”. Click on the “Decision Node” Option.
+### How to Use It
 
-3.  The Decision Node Action Box will Pop up. Create a transition between the Step node to the Decision Node. Similarly, create a transition from the Decision node to the desired Step Nodes. (Click here to know more about Step Nodes)
+1. Write each branch in plain language.
+2. Identify the field or relation that decides the branch.
+3. Configure visibility, guard, validation, or automation logic.
+4. Add a clear message for blocked paths.
+5. Test each branch with sample records.
 
-4.  Click on the “First Switch” option, under the “If” data space. The Tab will open on the right side of your workspace.
+### How to Verify
 
-5.  Click on the “+Add New” option, which is present alongside the Conditions Drop Down Box. You will be shown two options :
+The AI should verify every branch:
 
-    - Location Check - It identifies whether two specified geo locations are close to one another. The specific distance to check the proximity can be modified. There is no pre-specified distance. A good example where you can use this is when you want to make sure the user is at a given location ( at or near the customer’s location).
-    - Expression Check - This is a simple logic based check. The User can enter the logic based code in the low-code environment. The code can be simple (for example - to check whether the two values are the same) or it can be a complex code (For example- To check whether the delivery boy has reached the location between 12pm to 1pm).
-
-6.  You can add multiple if-conditions if you wish to do so. For that you must click on the "Add Switch" Button under the if-description box and write your desired logic for the same.
-
-7.  The logic is ready. You can check it by implementing it on your app.
-
----
-
-## Condition Types
-
-### Location Check
-
-Verifies if two locations are within a specified distance of each other.
-
-| Configuration | Description |
-|---------------|-------------|
-| **Location 1** | First location (e.g., user's current location) |
-| **Location 2** | Second location (e.g., customer address) |
-| **Distance** | Maximum allowed distance in meters |
-
-### Expression Check
-
-Uses JavaScript to evaluate conditions.
-
-```javascript
-// Simple comparison
-task.data.status === "Approved"
-
-// Multiple conditions
-task.data.amount > 100 && task.data.is_verified === true
-
-// Check user role
-loggedInUser.role === "Manager"
-```
-
----
-
-## Multiple Conditions (Switches)
-
-You can add multiple conditions (switches) to handle different scenarios:
-
-```
-Decision Node
-├── If: task.data.priority === "High" → Urgent Screen
-├── If: task.data.priority === "Medium" → Normal Screen
-└── Default → Low Priority Screen
-```
-
-Conditions are evaluated in order. The first matching condition determines the path.
-
----
-
-## For AI Agents
-
-### Decision Node Structure
-
-```typescript
-interface DecisionNode {
-  nodeId: string;
-  type: 'DECISION';
-  name: string;
-  switches: Switch[];
-  defaultTransition?: string;
-}
-
-interface Switch {
-  switchId: string;
-  condition: Condition;
-  targetNodeId: string;
-}
-
-interface Condition {
-  type: 'LOCATION_CHECK' | 'EXPRESSION';
-  config: LocationCheckConfig | ExpressionConfig;
-}
-
-interface LocationCheckConfig {
-  location1: string;  // Data field path
-  location2: string;  // Data field path
-  maxDistanceMeters: number;
-}
-
-interface ExpressionConfig {
-  expression: string;  // JavaScript expression
-}
-```
-
-### UI Components
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| DecisionNodeEditor | `/src/views/workflows/nodes/DecisionNode/` | Decision node configuration |
-| SwitchEditor | `/src/views/workflows/nodes/DecisionNode/Switch/` | Condition configuration |
-| ExpressionBuilder | `/src/components/LowCode/ExpressionBuilder/` | Expression editor |
-
-### Event Tracking
-
-```typescript
-// Decision node events
-WorkflowEvents.DECISION_NODE_CREATED
-WorkflowEvents.DECISION_NODE_UPDATED
-WorkflowEvents.DECISION_SWITCH_ADDED
-TaskEvents.DECISION_EVALUATED
-```
+- A record that should take the branch can take it.
+- A record that should not take the branch cannot take it.
+- The user sees a useful explanation when blocked.
+- Reports and views show the resulting status correctly.

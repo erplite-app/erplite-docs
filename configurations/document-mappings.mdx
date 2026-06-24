@@ -1,0 +1,80 @@
+---
+title: "Document Mappings"
+sidebarTitle: "Document Mappings"
+description: "Create target records by pulling data from source records."
+---
+
+Document mappings let users create one business document from another without manually re-entering data.
+
+Examples:
+
+- Create a GRN from a Purchase Order.
+- Create a Dispatch from a Sales Order.
+- Create a Purchase Order from a Reorder Recommendation.
+- Create child line items from source line items.
+
+## What a Mapping Controls
+
+| Part | Purpose |
+|------|---------|
+| **Source table** | The table users pull from. |
+| **Target table** | The table users create or update. |
+| **Source filter** | Which source records are eligible. |
+| **Header mapping** | Which source header fields copy into the target header. |
+| **Child mapping** | Which source child rows become target child rows. |
+| **Row filter** | Which child rows are included. |
+| **Computed fields** | Target values calculated during the pull. |
+| **Backlink** | Stores the source row reference on the target row. |
+| **Rollup rules** | Updates source quantities or status after target creation. |
+
+## AI Guidance
+
+### When to Use This Feature
+
+An AI should use document mappings when a user says:
+
+- "Create this document from that document."
+- "Pull line items from a source order."
+- "Avoid re-entering the same items."
+- "Create a draft target record that users can review before saving."
+
+Use an automation instead when no user review is needed and the system should create records fully in the background.
+
+### How to Use It
+
+<Steps>
+  <Step title="Choose source and target">
+    Identify the source table and the target table.
+  </Step>
+  <Step title="Define eligible source records">
+    Add source filters such as status, pending quantity, active flag, or customer/vendor match.
+  </Step>
+  <Step title="Map header fields">
+    Copy only fields that should carry over. Exclude IDs, timestamps, statuses, and fields that should be newly generated.
+  </Step>
+  <Step title="Map child rows">
+    Select source child table, target child table, row filters, field maps, and computed target fields.
+  </Step>
+  <Step title="Configure backlinks and rollups">
+    Link target rows back to source rows and update quantities or summaries where needed.
+  </Step>
+  <Step title="Test with real examples">
+    Pull from a sample source record, review the target draft, edit if needed, and save.
+  </Step>
+</Steps>
+
+### How to Verify
+
+The AI should verify:
+
+- Only eligible source records appear in **Get Items From**.
+- Header fields copy correctly.
+- Child rows are included or excluded correctly.
+- Target draft records are editable before save.
+- Backlinks connect target rows to source rows.
+- Rollups or pending quantities update after save.
+- Source records with no remaining eligible rows no longer appear if that is the intended rule.
+
+<Warning>
+Do not copy source status fields into target records unless the business explicitly wants that. New target documents usually need their own starting status.
+</Warning>

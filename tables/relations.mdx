@@ -1,0 +1,80 @@
+---
+title: "Relations"
+sidebarTitle: "Relations"
+description: "Link tables together so records can reference related business records."
+---
+
+Relations connect records across tables. They let users select a vendor on a purchase order, connect items to a parent order, link work orders to assets, or connect dispatch lines to sales order lines.
+
+## When to Use Relations
+
+Use a relation when one record should point to another record instead of copying text.
+
+| Business Example | Relation |
+|------------------|----------|
+| Purchase order belongs to a vendor | Purchase Orders → Vendors |
+| Purchase order has line items | Purchase Orders → PO Items |
+| Work order is for an asset | Work Orders → Assets |
+| Dispatch fulfills a sales order | Dispatches → Sales Orders |
+| Dispatch line fulfills a sales order line | Dispatch Lines → Sales Order Lines |
+
+## Relation Behavior
+
+Relations can support:
+
+- Linking existing records.
+- Creating new related records while creating the parent.
+- Showing related records as tabs on a detail page.
+- Filtering selectable records based on parent field values.
+- Displaying readable labels using the related table's display column.
+- Pulling child rows from source records through document mappings.
+
+## AI Guidance
+
+### When to Use This Feature
+
+An AI should use relations when the same entity is referenced repeatedly, needs its own fields, has its own lifecycle, or should be reported independently.
+
+Examples:
+
+- Do not store Vendor Name as text on every PO. Link to a Vendor record.
+- Do not store item details only inside a PO note. Use PO Item records linked to the PO.
+- Do not copy an asset location into every work order if assets already have locations.
+
+### How to Use It
+
+<Steps>
+  <Step title="Identify parent and child">
+    Decide which record owns the process and which records are linked to it.
+  </Step>
+  <Step title="Create the relation field">
+    Add a relation column and choose the target table.
+  </Step>
+  <Step title="Choose cardinality">
+    Decide whether the field should link one record or many records.
+  </Step>
+  <Step title="Configure create/link behavior">
+    Allow users to link existing records, create new records, or both.
+  </Step>
+  <Step title="Add relation filters if needed">
+    Limit selectable records based on status, team, customer, vendor, warehouse, or other context.
+  </Step>
+  <Step title="Test from both sides">
+    Open the parent and child records to confirm the relationship is visible and understandable.
+  </Step>
+</Steps>
+
+### How to Verify
+
+The AI should verify:
+
+- Relation pickers show readable record names.
+- Users can only pick valid related records when filters are configured.
+- Linked records appear on the detail page.
+- Inline child creation saves with the parent record.
+- Derived lookups and rollups update from related records.
+- Imports and exports preserve relation values in a usable format.
+
+<Tip>
+If relation choices show unreadable IDs, set a better display column on the related table.
+</Tip>

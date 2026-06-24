@@ -1,120 +1,53 @@
 ---
-title: "Automations"
-description: "ERPLite Automations provide a robust and versatile approach to shaping your app's behavior, enabling you to create highly dynamic and interactive user experiences tailored to your specific requirements."
+title: "Workflow Automations"
+sidebarTitle: "Automation Overview"
+description: "Use workflow automations to run business logic during record actions and workflow execution."
 ---
 
-Leveraging ERPLite Automations, you can seamlessly integrate with various external systems, your organization's custom APIs, and implement intelligent logic within your ERPLite app screens, delivering a highly adaptive and efficient user experience. See some examples of what you can build with Automations here.
+Workflow automations run alongside workflow actions. They are useful when clicking a workflow button should do more than change a status.
 
-## Types of Automations
-There are four main types of automations in ERPLite:
+Examples:
 
-1. Screen Transitions: Automations that are executed during screen transitions, allowing you to perform validations or integrate with external systems as users navigate between screens.
+- Send an approval email when a record is submitted.
+- Generate a document when a PO is confirmed.
+- Update inventory when a dispatch is marked delivered.
+- Notify a manager when an exception path is used.
+- Create follow-up records after a status change.
 
-2. Screen On Load: Automations that control the appearance and behavior of a screen when the screen is loaded. This can include fetching data from REST APIs or databases, hiding or showing specific screen components, and other dynamic adjustments. ​
+## When to Use Workflow Automations
 
-3. In-Screen: Automations that modify screen components based on user interactions, such as controlling the visibility of components or loading data from external systems during screen interactions.​
+Use workflow automations when a user action should trigger a repeatable side effect.
 
-4. Task Events: Automations that can be configured to trigger by task-level events, such as task assignment, unassignment, creation, deletion, update, or changes to a task's scheduled slot.
+Use table automations when the trigger is simply a record being created, updated, deleted, scheduled, or received by webhook.
 
-## Automation Components
+## AI Guidance
 
-Every automation in ERPLite consists of the following components:
+### When to Use This Feature
 
-- Trigger: At least one trigger is required for each automation. Triggers define the event for which the automation will be executed, such as a specific user interaction or a task event.
+An AI should use workflow automation when the business says "when the user clicks this button, also do this other thing."
 
-- Validation (optional): A validation determines whether an automation should be executed or not. If a validation is specified, the automation will only be executed if the validation returns true. See more details about validations here
+### How to Use It
 
-- Action Blocks: An automation can have one or more action blocks, each containing multiple conditions and actions. All conditions within an action block must be met (return true) for the actions in the action block to be executed.  
+<Steps>
+  <Step title="Identify the workflow action">
+    Choose the transition or action button that should trigger the automation.
+  </Step>
+  <Step title="Define the side effect">
+    Decide whether the automation sends a message, updates a record, creates a record, generates a document, or calls another system.
+  </Step>
+  <Step title="Add conditions if needed">
+    Add conditions so the automation runs only for the correct records.
+  </Step>
+  <Step title="Test the button">
+    Click the workflow button on a sample record and confirm both the status/action and automation result.
+  </Step>
+</Steps>
 
-### Creating Automations
-The entry point for each of the automation different based on the type of automation. Refer to the individual automation page for more details
+### How to Verify
 
-To create an automation in ERPLite, follow these steps:
-- Navigate to the ERPLite app editor and select the screen or task event where you want to add an automation.
-- Click on the "Automations" tab, and then click the "Add Automation" button.
-- Configure the trigger(s) for your automation.
-- Optionally, define a validation for your automation.
-- Create one or more action blocks, specifying the conditions and actions for each block.
+The AI should verify:
 
-Once you have created and configured your automation, save your changes and test your app to ensure that the automation is functioning as expected. By using ERPLite Automations, you can create more dynamic and interactive app experiences that respond to user inputs and external data, improving the overall usability and functionality of your app.
-
----
-
-## Automation Flow
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   TRIGGER   │ --> │ VALIDATION  │ --> │   ACTION    │
-│             │     │ (Optional)  │     │   BLOCKS    │
-│ • Screen    │     │             │     │             │
-│ • Transition│     │ • Expression│     │ • Conditions│
-│ • On-Load   │     │ • REST API  │     │ • Actions   │
-│ • Task Event│     │ • Location  │     │             │
-└─────────────┘     └─────────────┘     └─────────────┘
-```
-
----
-
-## For AI Agents
-
-### Automation Structure
-
-```typescript
-interface Automation {
-  automationId: string;
-  name: string;
-  description?: string;
-  isActive: boolean;
-  trigger: AutomationTrigger;
-  validation?: AutomationValidation;
-  actionBlocks: ActionBlock[];
-}
-
-interface AutomationTrigger {
-  type: 'SCREEN_TRANSITION' | 'SCREEN_ON_LOAD' | 'IN_SCREEN' | 'TASK_EVENT';
-  config: TriggerConfig;
-}
-
-interface ActionBlock {
-  blockId: string;
-  conditions: Condition[];
-  actions: Action[];
-}
-```
-
-### Trigger Types
-
-| Type | API Key | When Fired |
-|------|---------|------------|
-| Screen Transition | `SCREEN_TRANSITION` | User navigates between screens |
-| Screen On-Load | `SCREEN_ON_LOAD` | Screen is loaded |
-| In-Screen | `IN_SCREEN` | Component event (onChange, etc.) |
-| Task Event | `TASK_EVENT` | Task lifecycle events |
-
-### API: List Automations
-
-```bash
-GET /api/v1/workflows/:workflowId/automations
-Authorization: Bearer {token}
-```
-
-### UI Components
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| AutomationBuilder | `/src/views/automations/` | Main automation editor |
-| TriggerConfig | `/src/views/automations/Trigger/` | Trigger configuration |
-| ValidationConfig | `/src/views/automations/Validation/` | Validation setup |
-| ActionBlockEditor | `/src/views/automations/ActionBlock/` | Action block configuration |
-
-### Event Tracking
-
-```typescript
-// Automation events
-AutomationEvents.AUTOMATION_CREATED
-AutomationEvents.AUTOMATION_UPDATED
-AutomationEvents.AUTOMATION_DELETED
-AutomationEvents.AUTOMATION_EXECUTED
-AutomationEvents.AUTOMATION_FAILED
-```
-
+- The workflow action still completes.
+- The automation runs only after the intended button is used.
+- Messages, documents, related records, or external calls contain the correct data.
+- Failures are visible to an administrator.
