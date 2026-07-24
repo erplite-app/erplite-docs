@@ -1,0 +1,227 @@
+---
+title: "Reads"
+sidebarTitle: "Reads"
+description: "Health, whoami, balances, explain, expiry exposure, batches, and count sheets."
+---
+
+All reads are `GET`. Balances, explain, expiry, and batches need only `stock.view` (any role, and integrations). The count sheet needs `count.enter`. The account is always taken from your token — no `account` parameter exists.
+
+## Health
+
+`GET /health` — confirm the module is enabled and read its version. Behind the allowlist, so a non-enabled account cannot use it to fingerprint the module.
+
+```bash
+curl https://api.erplite.app/bff-service/inventory/health \
+  -H "Authorization: Bearer $ERPLITE_TOKEN"
+```
+
+```json
+{ "module": "inventory", "version": "0.1.0", "status": "ok" }
+```
+
+## Whoami
+
+`GET /whoami` — the caller's identity, role, and capabilities. See [Authentication and roles](/inventory/auth-and-roles#whoami) for the full shape. Returns `kind`, `id`, `display`, `stamp`, `role`, `roles`, and `capabilities`.
+
+## Balances
+
+`GET /balances` — stock at the grain, or rolled up.
+
+**Query parameters** (all optional):
+
+| Parameter | Type | Meaning |
+|-----------|------|---------|
+| `item` | string | Filter to one item code. |
+| `warehouse` | string | Filter to one warehouse code. |
+| `bin` | string | Filter to one bin. |
+| `batch` | string | Filter to one batch. |
+| `owner` | string | Filter to one owner. |
+| `role` | string | Filter by the warehouse's material-role policy. |
+| `group_by` | string | Comma-separated grain fields to roll up by, for example `item,warehouse`. |
+| `include_zero` | boolean | Include grains sitting at zero. Default `false`. |
+| `limit` | number | Page size. |
+| `offset` | number | Page offset. |
+
+```bash
+curl "https://api.erplite.app/bff-service/inventory/balances?item=SKU-SUGAR-50KG&warehouse=WH-MAIN" \
+  -H "Authorization: Bearer $ERPLITE_TOKEN"
+```
+
+**Response**
+
+```json
+{
+  "grain": ["item", "warehouse", "bin", "batch", "owner"],
+  "rolled_up": false,
+  "rows": [
+    {
+      "item": "SKU-SUGAR-50KG",
+      "item_name": "Sugar 50kg",
+      "warehouse": "WH-MAIN",
+      "warehouse_name": "Main store",
+      "bin": null,
+      "batch": "B-0721-01",
+      "owner": null,
+      "on_hand": 2500,
+      "reserved": 0,
+      "available": 2500,
+      "revision": 4
+    }
+  ],
+  "total": 1,
+  "zero_rows_suppressed": 0,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+- `grain` lists the fields each row is keyed by. It is the full five when not rolled up.
+- A rolled-up row omits the folded-away fields and carries `grains` (how many grains merged) instead of `revision`.
+- `zero_rows_suppressed` counts rows dropped for being empty, so "no stock" is distinguishable from "wrong filter".
+- A mistyped filter code narrows to nothing; it never widens to the whole account.
+
+## Explain
+
+`GET /explain` — the movement history that produces a balance, with a running balance. This is the transaction-level audit view.
+
+**Query parameters**:
+
+| Parameter | Type | Meaning |
+|-----------|------|---------|
+| `item` | string | **Required.** The item code. |
+| `warehouse` | string | Narrow to a warehouse. |
+| `batch` | string | Narrow to a batch. |
+| `owner` | string | Narrow to an owner. |
+| `from` | string | Window start (ISO date-time). |
+| `to` | string | Window end. |
+| `order` | `effective` \| `recorded` | Order movements by business time or record time. |
+| `limit` / `offset` | number | Paging. |
+
+**Response**
+
+```json
+{
+  "grain": { "item": "SKU-SUGAR-50KG", "warehouse": "WH-MAIN", "bin": null, "batch": null, "owner": null },
+  "order": "effective",
+  "from": "2026-07-01T00:00:00+05:30",
+  "to": "2026-07-31T23:59:59+05:30",
+  "opening_balance": 0,
+  "closing_balance": 2500,
+  "rows": [
+    {
+      "movement_key": "…",
+      "movement_type": "receipt",
+      "qty": 2500,
+      "balance_after": 2500,
+      "effective_at": "2026-07-21T10:30:00+05:30",
+      "recorded_at": "2026-07-21T10:30:02+05:30",
+      "actor": "user:usr_123",
+      "document_ref": "GRN-00017",
+      "backdated": false
+    }
+  ],
+  "total": 1,
+  "limit": 100,
+  "offset": 0,
+  "reservations": null,
+  "reservations_available": false,
+  "contains_backdated": false
+}
+```
+
+- `opening_balance` folds everything before the window; the first row starts from it.
+- `balance_after` on a backdated movement follows **recorded** order — the running balance is what was true when the movement was posted.
+- `reservations` is `null` until the Orders module produces reservation events; `reservations_available` says whether they can be included yet.
+
+## Expiry exposure
+
+`GET /expiry-exposure` — batches at or near expiry, with quantities at risk.
+
+**Query parameters**: `warehouse`, `item`, `days` (window in days), `include_expired` (boolean).
+
+**Response**
+
+```json
+{
+  "as_of": "2026-07-24T09:00:00+05:30",
+  "days": 30,
+  "rows": [
+    {
+      "item": "SKU-MILK-1L",
+      "item_name": "Milk 1L",
+      "warehouse": "WH-COLD",
+      "batch": "B-0710",
+      "expiry_date": "2026-07-28",
+      "days_remaining": 4,
+      "status": "expiring",
+      "qty": 120
+    }
+  ],
+  "total_qty_at_risk": 120,
+  "expired_qty": 0,
+  "expiring_qty": 120,
+  "skipped_no_expiry_date": 2,
+  "skipped_zero_qty": 5
+}
+```
+
+- `days_remaining` goes negative once expired, so the most urgent rows sort first.
+- `status` is `expired` or `expiring`.
+- The `skipped_*` counts make "nothing at risk" distinguishable from "nothing was examined".
+
+## Batches
+
+`GET /batches` — batches with a status derived on read.
+
+**Query parameters**: `item` (optional).
+
+**Response**
+
+```json
+{
+  "rows": [
+    {
+      "item": "SKU-MILK-1L",
+      "batch_code": "B-0710",
+      "mfg_date": "2026-07-01",
+      "expiry_date": "2026-07-28",
+      "on_hand": 120,
+      "status": "expiring"
+    }
+  ],
+  "total": 1,
+  "as_of": "2026-07-24T09:00:00+05:30"
+}
+```
+
+`status` is one of `available`, `expired`, `depleted`, `on_hold`, `rejected`. It is computed from the batch's expiry and on-hand at read time (depleted and expired take precedence over the stored status); it is never stored.
+
+## Count sheet
+
+`GET /count-sheet` — generate a stocktake sheet. A read, but it needs `count.enter` because it is the first half of the count workflow. Each line captures the balance **revision** it was read at, which the [count operation](/inventory/api/operations#count) checks to reject a stale count.
+
+**Query parameters**: `warehouse`, `item`, `include_zero` (boolean, default `false`).
+
+**Response**
+
+```json
+{
+  "generated_at": "2026-07-24T09:00:00+05:30",
+  "lines": [
+    {
+      "lineNo": 1,
+      "item": "SKU-SUGAR-50KG",
+      "item_name": "Sugar 50kg",
+      "warehouse": "WH-MAIN",
+      "bin": null,
+      "batch": "B-0721-01",
+      "owner": null,
+      "system_qty": 2500,
+      "balance_revision": 4
+    }
+  ],
+  "scope": { "warehouse": "WH-MAIN", "item": null, "include_zero": false }
+}
+```
+
+Carry each line's `balance_revision` into the count you post. See the [count operation](/inventory/api/operations#count).

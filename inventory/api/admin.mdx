@@ -1,0 +1,78 @@
+---
+title: "Admin Endpoints"
+sidebarTitle: "Admin"
+description: "Recover stranded postings and reconcile recipe events. Operational endpoints for a scheduler or an operator."
+---
+
+Two operational endpoints for keeping the module healthy. They are idempotent and safe to run on a schedule or on demand.
+
+## Recover stranded postings
+
+`POST /admin/recover` — finish postings a crash left half-done. Capability `config.manage` (admin). Returns `200`.
+
+When a posting commits its ledger transaction but the document status flip that follows does not land, the document sits at `posting` with the stock already correct. This sweep reads the posting receipt for each such document: **receipt present** → flip the document to `posted`; **receipt absent** → the transaction rolled back, so mark the document `failed` (nothing was written, safe to post again). A document younger than a grace window is left alone, because a posting still in flight looks identical to a dead one.
+
+**Defaults to a dry run.** Send `{ "apply": true }` to actually write. Any other body (or none) reports without changing anything.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `apply` | boolean | | `true` writes; anything else is a dry run. |
+
+**Response**
+
+```json
+{
+  "dry_run": false,
+  "scanned": 5,
+  "outcomes": [
+    { "idempotency_key": "recv-…-a", "doc_no": "GRN-00017", "action": "completed", "reason": "ledger committed; document flipped to posted" },
+    { "idempotency_key": "iss-…-b", "doc_no": "ISS-00031", "action": "failed", "reason": "no receipt — the transaction rolled back, so nothing was written" }
+  ],
+  "completed": 1,
+  "failed": 1,
+  "tooRecent": 3,
+  "truncated": false,
+  "summary": "stranded postings: 5 scanned — 1 completed, 1 failed, 3 left (too recent)"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `dry_run` | Whether this run wrote anything. |
+| `scanned` | Documents found in `posting`. |
+| `outcomes[].action` | `completed`, `failed`, or `too-recent`. |
+| `completed` / `failed` / `tooRecent` | Counts per action. |
+| `truncated` | `true` when the sweep hit its limit and more may remain — run again. |
+| `summary` | A one-line human summary. |
+
+<Warning>
+If the sweep finds stranded documents but the engine store holds no posting receipts at all for the account, it **refuses** rather than mark everything failed — that pattern means a brand-new or wrong store, and "no receipt" could not then be read as "nothing was written". The response carries a `refused` message instead of outcomes.
+</Warning>
+
+## Reconcile recipe events
+
+`POST /admin/reconcile-events` — heal any recipe change whose event went missing. Capability `events.manage` (admin). Returns `200`. Idempotent — safe to run repeatedly or on a schedule.
+
+Stock postings write their events in the same transaction as the movement, so there is nothing to repair there. Recipe changes are a cross-store write (the recipe to a platform table, then its event to the outbox), so a crash between the two can leave a recipe change with no event. This re-emits the deterministic events a recipe version's current state implies — `bom.created`, and `bom.published` if it is published — reconstructed from the record. Re-emission is idempotent, so an event already present is left alone.
+
+**Request** — no body.
+
+**Response**
+
+```json
+{
+  "versionsChecked": 12,
+  "repaired": ["bom.published:rec_abc"]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `versionsChecked` | Recipe versions examined. |
+| `repaired` | The `event_id`s re-emitted to heal a tear. Empty when everything already had its event. |
+
+<Note>
+`bom.superseded` and `bom.edited` are not reconciled: a subscriber can derive a supersession from the next publish, and an edit event's id carries its timestamp, so a missing one cannot be reconstructed exactly.
+</Note>

@@ -1,0 +1,99 @@
+---
+title: "Recipes and Items"
+sidebarTitle: "Recipes and items"
+description: "Create, publish, and edit bill-of-material versions, and enable batch tracking on an item with stock."
+---
+
+Recipes and batch-tracking transitions are engine-mediated, not generic-CRUD, because they carry rules a table guard cannot hold: a published recipe is the one live recipe for its item, a recipe used in a production run is immutable, and enabling batch tracking must reclassify existing stock before it flips the flag.
+
+## Recipes (bill of material)
+
+A recipe belongs to one producible item (`semi_finished` or `finished_good`) and declares, for a base output quantity, the components it consumes. A version is created as a **draft**, **published** to make it live (superseding the previous live version for that item), and frozen once a production run references it.
+
+### Create a recipe version
+
+`POST /bom/versions` — creates a draft. Capability `bom.manage` (supervisor). Returns `201`.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `item` | string | ✓ | Item code the recipe produces. Must be `semi_finished` or `finished_good`. |
+| `version_no` | string | ✓ | Unique per item. |
+| `output_qty` | number | ✓ | Base quantity the recipe is written for. |
+| `output_uom` | string | ✓ | Output unit code. |
+| `effective_from` | string | | Optional. |
+| `notes` | string | | Optional. |
+| `lines[].component_item` | string | ✓ | Component item code. Cannot be the output item. |
+| `lines[].qty_per_output` | number | ✓ | How much of this component one base output needs. |
+| `lines[].uom` | string | ✓ | Component unit code. |
+| `lines[].wastage_pct` | number | | Zero or more. |
+| `lines[].consumption_stage` | string | | `production` or `packaging`. |
+
+**Response**
+
+```json
+{ "version_id": "rec_abc", "version_no": "v1", "line_ids": ["ln_1", "ln_2"] }
+```
+
+### Publish a recipe version
+
+`POST /bom/versions/{id}/publish` — makes this the one live recipe for its item, superseding the previous live version. Capability `bom.manage`. Returns `200`.
+
+Publishing is serialized per item, so two concurrent publishes cannot both go live, and it validates that the published recipe graph does not form a loop.
+
+**Response**
+
+```json
+{ "version_id": "rec_abc", "version_no": "v1", "item": "itm_sf1", "superseded": "rec_prev" }
+```
+
+`superseded` is the version this one replaced, or `null` if it is the item's first.
+
+### Edit a recipe version
+
+`PATCH /bom/versions/{id}` — replace the output and component lines of a draft or a published-but-unused version. Capability `bom.manage`. Returns `200`.
+
+A version referenced by a posted production run is **immutable** and the edit is refused — create a new version instead, and publish it. The output item does not change; only the base output quantity, unit, and lines do. Lines are replaced wholesale.
+
+**Request** (the version id is in the path, not the body)
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `output_qty` | number | ✓ | |
+| `output_uom` | string | ✓ | |
+| `effective_from` | string | | |
+| `notes` | string | | |
+| `lines[]` | array | ✓ | Same line shape as create. |
+
+**Response**
+
+```json
+{ "version_id": "rec_abc", "line_ids": ["ln_3", "ln_4"] }
+```
+
+## Enable batch tracking
+
+`POST /items/{code}/enable-batch-tracking` — turn on batch tracking for an item that already has stock. Capability `master.maintain` (operator). Returns `200`.
+
+This is not a flag flip. Any existing untracked stock is moved, grain by grain, into a system `LEGACY` batch (a `reclassify_out` from the untracked grain and a `reclassify_in` into the legacy grain, netting to zero on-hand), and only then is the flag flipped — so stock is under a batch before tracking becomes mandatory. A retry after a partial run finds no untracked stock left and simply flips the flag.
+
+**Request** — no body; the item is the path parameter `{code}` (the item code).
+
+**Response**
+
+```json
+{
+  "item": "SKU-SUGAR-50KG",
+  "legacy_batch": "LEGACY",
+  "grains_reclassified": 3,
+  "posting": {
+    "doc_no": "ADJ-00044", "doc_status": "posted", "applied": true,
+    "movementsWritten": 6, "balancesUpdated": 6, "eventsWritten": 7
+  }
+}
+```
+
+- `legacy_batch` is `LEGACY` when stock was reclassified, or `null` when there was none.
+- `grains_reclassified` is how many untracked grains were moved.
+- `posting` is present only when a reclassification happened.

@@ -1,0 +1,124 @@
+---
+title: "Authentication and Roles"
+sidebarTitle: "Auth and roles"
+description: "Bearer authentication, the account allowlist, the four module roles, and the capability each action needs."
+---
+
+Every request is authenticated, checked against the module allowlist, and then authorized against the action it is trying to perform.
+
+## Base URL
+
+All inventory endpoints are served by the BFF under one prefix:
+
+```
+https://api.erplite.app/bff-service/inventory
+```
+
+Every path in this reference is relative to that prefix. For example, `GET /balances` is `https://api.erplite.app/bff-service/inventory/balances`.
+
+## Bearer authentication
+
+Send your credential as a bearer token:
+
+```bash
+curl https://api.erplite.app/bff-service/inventory/whoami \
+  -H "Authorization: Bearer $ERPLITE_TOKEN"
+```
+
+The token identifies both the **account** and the **caller**. The account is always taken from the token — no endpoint accepts an `account` parameter, and any one you send is ignored.
+
+## The allowlist
+
+The module runs as a pilot. Your account must be on the allowlist for `/bff-service/inventory/*`. A request from an account that is not enabled is refused with `403 not_enabled` before any handler runs. The error deliberately does not echo your account id back.
+
+To confirm the module is enabled and see its version:
+
+```bash
+curl https://api.erplite.app/bff-service/inventory/health \
+  -H "Authorization: Bearer $ERPLITE_TOKEN"
+# → { "module": "inventory", "version": "…", "status": "ok" }
+```
+
+## Two kinds of caller
+
+Callers are not a single ladder. There are two distinct kinds.
+
+**Users** hold one of four module roles, ranked lowest to highest:
+
+```
+viewer  <  operator  <  supervisor  <  admin
+```
+
+A user holds the highest role they are bound to. Roles are not new roles you invent — an account **binds** its existing ERPLite roles, teams, or users to a module role in `inv_role_binding` (Settings → Inventory → Access). Only active bindings count; deactivating a binding is how access is revoked.
+
+**Integrations** are named API principals (for example `noice-sync`). An integration is **not** on the role ladder. It has its own fixed set of capabilities — it can read stock, maintain the master fields it owns, post basic operations, import, and export, but it can never adjust, reverse, post count variances, backdate, override stewardship, or change module config. Those are human decisions by design. Binding an integration's id to a module role does not grant it that role.
+
+## Capabilities and the floor
+
+Each action needs a **capability**. The table below is the **floor**: the lowest role that may perform each action. Accounts may tighten it (require a higher role), but never loosen it. A caller with capability X can do everything at or below their role.
+
+| Capability | Minimum role | Used by |
+|-----------|--------------|---------|
+| `stock.view` | viewer | Read balances, explain, expiry, batches |
+| `master.maintain` | operator | Maintain unlocked master fields; enable batch tracking |
+| `doc.post_basic` | operator | Receive, issue, transfer, production-post |
+| `count.enter` | operator | Generate a count sheet, enter counts |
+| `export` | operator | Export any entity to CSV |
+| `doc.adjust` | supervisor | Post an adjustment (delta) |
+| `doc.absolute_correction` | supervisor | Opening stock; absolute "set to X" adjustment |
+| `doc.backdate` | supervisor | Post any operation dated to an earlier local day |
+| `master.deactivate` | supervisor | Deactivate master data that has history |
+| `count.post_variance` | supervisor | Post the variance a count produces |
+| `doc.reverse` | supervisor | Reverse a posted document |
+| `import.commit` | supervisor | Commit an import |
+| `bom.manage` | supervisor | Create, publish, or edit a recipe version |
+| `stewardship.override` | admin | Override or detach a stewarded field |
+| `config.manage` | admin | Module config; run the recovery sweep |
+| `events.manage` | admin | Manage subscriptions; reconcile events |
+
+An integration principal holds this fixed subset regardless of role: `stock.view`, `master.maintain` (owned fields only), `doc.post_basic`, `import.commit`, and `export`.
+
+<Note>
+`import.commit` sits at supervisor for a user, but is in the integration's fixed set. This is intentional: an integration syncing master data needs to commit imports, but a person needs supervisor to do the same by hand.
+</Note>
+
+## whoami
+
+`GET /whoami` returns who the engine thinks you are and exactly what you may do. The dashboard uses it to gate its screens, and it is the fastest way to debug a `403`.
+
+```bash
+curl https://api.erplite.app/bff-service/inventory/whoami \
+  -H "Authorization: Bearer $ERPLITE_TOKEN"
+```
+
+```json
+{
+  "kind": "user",
+  "id": "usr_123",
+  "display": "Asha (Supervisor)",
+  "stamp": "user:usr_123",
+  "role": "supervisor",
+  "roles": ["operator", "supervisor"],
+  "capabilities": ["stock.view", "master.maintain", "doc.post_basic", "count.enter",
+                   "export", "doc.adjust", "doc.absolute_correction", "doc.backdate",
+                   "master.deactivate", "count.post_variance", "doc.reverse",
+                   "import.commit", "bom.manage"]
+}
+```
+
+For an integration, `kind` is `"integration"`, `role` is `null`, `roles` is empty, and `capabilities` is the fixed integration set.
+
+## What a refusal tells you
+
+A `403 forbidden` names the capability you lacked and the role it needs, so you can tell "ask a supervisor" apart from "this integration will never be able to do this":
+
+```json
+{
+  "error": "forbidden",
+  "capability": "doc.adjust",
+  "requires": "supervisor",
+  "message": "Operator is below the supervisor floor."
+}
+```
+
+See [API conventions](/inventory/api/conventions) for the full error envelope and status codes.

@@ -1,0 +1,215 @@
+---
+title: "Stock Operations"
+sidebarTitle: "Operations"
+description: "Receive, issue, transfer, adjust, count, opening, production, and reverse — every operation's request and response."
+---
+
+Every stock change is posted to `POST /ops/{operation}`. All share the [request envelope and posting result](/inventory/api/conventions#the-operation-request-envelope), take an `idempotency_key`, and require a valid `effective_at` that is not in the future. Master data is addressed by business code.
+
+Any operation dated to an earlier account-local day additionally requires the `doc.backdate` capability — see [Concepts → Backdating](/inventory/concepts#backdating).
+
+## Receive
+
+Stock arrives. Movement type `receipt`. Capability `doc.post_basic`.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `idempotency_key` | string | ✓ | |
+| `effective_at` | string | ✓ | ISO date-time. |
+| `source_ref` | `{ type, id }` | | `type` from the governed set. |
+| `lines[].item` | string | ✓ | Item code. |
+| `lines[].to_warehouse` | string | ✓ | Destination warehouse code. |
+| `lines[].qty` | number | ✓ | Positive, in `uom`. |
+| `lines[].uom` | string | ✓ | Unit code. |
+| `lines[].bin` | string | | Destination bin. |
+| `lines[].owner` | string | | Owner; omit for manufacturer-owned. |
+| `lines[].batch` | `{ code, mfg_date?, expiry_date? }` | conditional | Required for batch-tracked items. Created if new. |
+
+```bash
+curl -X POST https://api.erplite.app/bff-service/inventory/ops/receive \
+  -H "Authorization: Bearer $ERPLITE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotency_key": "recv-2026-07-21-po1042-a",
+    "effective_at": "2026-07-21T10:30:00+05:30",
+    "source_ref": { "type": "po", "id": "PO-1042" },
+    "lines": [
+      { "item": "SKU-SUGAR-50KG", "to_warehouse": "WH-MAIN", "qty": 50, "uom": "BAG50",
+        "batch": { "code": "B-0721-01", "mfg_date": "2026-07-18", "expiry_date": "2027-01-18" } }
+    ]
+  }'
+```
+
+**Response** — the standard [posting result](/inventory/api/conventions#the-posting-result).
+
+## Issue
+
+Stock leaves. Movement type `issue`. Capability `doc.post_basic`. Quantities are entered positive; the engine applies the negative sign. The negative-stock floor and the expiry policy are enforced here.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `idempotency_key` | string | ✓ | |
+| `effective_at` | string | ✓ | |
+| `source_ref` | `{ type, id }` | | |
+| `reason` | string | | Free text. |
+| `lines[].item` | string | ✓ | |
+| `lines[].from_warehouse` | string | ✓ | Source warehouse code. |
+| `lines[].qty` | number | ✓ | Positive. |
+| `lines[].uom` | string | ✓ | |
+| `lines[].bin` | string | | |
+| `lines[].owner` | string | | |
+| `lines[].batch` | string | conditional | Batch **code** (string, not an object). Required for batch-tracked items, and must already exist. |
+
+**Response** — the posting result plus a `warnings` array. A `warning` has `line`, `code` (`expired_stock_issued`), and `message`, returned when an expired batch is issued under a `warn` policy.
+
+```json
+{
+  "doc_no": "ISS-00031", "doc_status": "posted", "applied": true,
+  "movementsWritten": 1, "balancesUpdated": 1, "eventsWritten": 2,
+  "warnings": []
+}
+```
+
+If stock is short, the engine refuses with `422 policy_violation` on `negative_stock_allowed`, reporting available, requested, and shortfall.
+
+## Transfer
+
+Stock moves between warehouses. Posts **two** movements per line — `transfer_out` on the source, `transfer_in` on the destination — so direction is read from the type, not the sign. Capability `doc.post_basic`.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `idempotency_key` | string | ✓ | |
+| `effective_at` | string | ✓ | |
+| `reason` | string | | |
+| `lines[].item` | string | ✓ | |
+| `lines[].from_warehouse` | string | ✓ | |
+| `lines[].to_warehouse` | string | ✓ | |
+| `lines[].qty` | number | ✓ | Positive. |
+| `lines[].uom` | string | ✓ | |
+| `lines[].bin` | string | | Source bin. |
+| `lines[].to_bin` | string | | Destination bin — a separate choice, not carried from the source. |
+| `lines[].owner` | string | | |
+| `lines[].batch` | string | | Batch code. |
+
+## Adjust
+
+Correct a quantity, with a mandatory reason and supporting reference. Movement type `adjustment`. Capability `doc.adjust` (supervisor).
+
+Each line is **either** a signed delta (`qty`) **or** an absolute target (`target_qty`), never both. `target_qty` cannot be backdated (`422`) — see [Concepts → Backdating](/inventory/concepts#backdating). An absolute target needs `doc.absolute_correction`.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `idempotency_key` | string | ✓ | |
+| `effective_at` | string | ✓ | |
+| `reason` | string | ✓ | One of: `damage`, `loss`, `found`, `quality_rejection`, `sample`, `correction`, `other`. |
+| `supporting_ref` | string | ✓ | The document, photo, ticket, or count that justifies it. |
+| `lines[].item` | string | ✓ | |
+| `lines[].warehouse` | string | ✓ | |
+| `lines[].qty` | number | conditional | Signed delta. Mutually exclusive with `target_qty`. |
+| `lines[].target_qty` | number | conditional | Absolute "set to X". Mutually exclusive with `qty`. Cannot be backdated. |
+| `lines[].uom` | string | ✓ | |
+| `lines[].bin` / `owner` / `batch` | string | | Grain fields. |
+
+## Count
+
+Post a physical count. Movement type `count_variance`. Capability `count.enter`; posting a variance additionally needs `count.post_variance` (supervisor), checked only if a line actually differs from the ledger.
+
+Generate the sheet first with [`GET /count-sheet`](/inventory/api/reads#count-sheet) and carry each line's `balance_revision`. Posting refuses any line whose grain moved since the sheet was read, with `409 stale_count_line`. A line that matches the system produces no movement but is still revision-checked.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `idempotency_key` | string | ✓ | |
+| `effective_at` | string | ✓ | |
+| `supporting_ref` | string | | The sheet or stocktake this came from. |
+| `lines[].item` | string | ✓ | |
+| `lines[].warehouse` | string | ✓ | |
+| `lines[].bin` / `batch` / `owner` | string \| null | | Grain fields. |
+| `lines[].counted_qty` | number | ✓ | What was found, zero or more. |
+| `lines[].uom` | string | ✓ | |
+| `lines[].balance_revision` | integer | ✓ | From the sheet. The staleness guard. |
+
+**Response** — the posting result plus `variances` (lines that produced a movement) and `matched` (lines that agreed with the ledger).
+
+```json
+{
+  "doc_no": "CNT-00009", "doc_status": "posted", "applied": true,
+  "movementsWritten": 2, "balancesUpdated": 2, "eventsWritten": 3,
+  "variances": 2, "matched": 5
+}
+```
+
+The system quantity is read from the ledger, never from your request — a caller who could supply it could supply a wrong one, and the variance (`counted − system`) would be computed against a figure nobody read.
+
+## Opening
+
+Set a starting balance. Movement type `opening`. Capability `doc.absolute_correction` (supervisor). Allowed only while a grain has no prior movements, or during a batch-tracking transition — it is how you seed stock a new account already holds, not a general "set to X".
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `idempotency_key` | string | ✓ | |
+| `effective_at` | string | ✓ | |
+| `source_note` | string | | Optional context. Not the governed `reason` an adjustment demands. |
+| `lines[].item` | string | ✓ | |
+| `lines[].warehouse` | string | ✓ | |
+| `lines[].qty` | number | ✓ | |
+| `lines[].uom` | string | ✓ | |
+| `lines[].bin` / `owner` / `batch` | string | | Grain fields. |
+
+## Production-post
+
+Run a recipe: consume components and output a product, in one document. Movement types `production_consume` (negative) and `production_output` (positive). Capability `doc.post_basic`.
+
+You declare the **output** quantity and name the batch for each consume; the engine derives the consume **quantities** from the pinned recipe version (scaled to your output, with wastage). The recipe version must be `published`. Consume legs are held to the negative-stock floor and the expiry policy; the output is held to the destination warehouse's material-role policy.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `idempotency_key` | string | ✓ | |
+| `effective_at` | string | ✓ | |
+| `bom_version` | string | ✓ | The recipe version id to pin. Must be published. |
+| `output_qty` | number | ✓ | Quantity to produce, in the recipe's output unit. |
+| `output.warehouse` | string | ✓ | Where the output goes. |
+| `output.batch` | `{ code, mfg_date?, expiry_date? }` | conditional | Required if the output item is batch-tracked. |
+| `output.bin` / `output.owner` | string | | |
+| `consumes[].component_item` | string | ✓ | Component item code the recipe uses. |
+| `consumes[].warehouse` | string | ✓ | Where it is consumed from. |
+| `consumes[].batch` | string | conditional | Required if the component is batch-tracked. |
+| `consumes[].bin` / `consumes[].owner` | string | | |
+
+Every recipe component must be named by exactly one consume line, and a consume naming a component the recipe does not use is refused. The response is the posting result plus a `warnings` array (`expired_stock_consumed`).
+
+## Reverse
+
+Undo a posted document with a compensating one. Movement type `reversal`. Capability `doc.reverse` (supervisor). Posted to `POST /ops/reverse`.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `idempotency_key` | string | ✓ | The reversal's own key. |
+| `document` | string | ✓ | The posting to reverse — its idempotency key (which is its `doc_no` today). |
+| `effective_at` | string | ✓ | |
+| `reason` | string | | Free text; a reversal is not categorised the way an adjustment is. |
+
+**Response** — the posting result plus `reversal_of` (the reversed document, echoed) and `movementsReversed`.
+
+```json
+{
+  "doc_no": "REV-00003", "doc_status": "posted", "applied": true,
+  "movementsWritten": 1, "balancesUpdated": 1, "eventsWritten": 2,
+  "reversal_of": "recv-2026-07-21-po1042-a", "movementsReversed": 1
+}
+```

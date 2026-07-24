@@ -1,0 +1,130 @@
+# ERPLite Inventory Module — LLM Context
+
+> Developer reference for the ERPLite Inventory API. Inventory is an append-only ledger governed by an engine: every stock change is an immutable `movement`, and a `balance` is a derived projection (the sum of movements). Integrations never write balances or edit movements — they POST an operation and the engine writes movements + balances + events atomically. Master data (items, warehouses, bins, units, batches, recipes) are ordinary platform tables; the engine governs only stock postings and recipe changes. This file is self-contained context for an AI agent working against the API. Verify shapes here before inventing fields; all shapes below are taken from the live code.
+
+## Base URL, auth, allowlist
+
+- Base URL: `https://api.erplite.app/bff-service/inventory` (every path below is relative to it).
+- Auth: `Authorization: Bearer <token>`. The token carries the account AND the caller. No endpoint accepts an `account` param; any is ignored.
+- Allowlist: the account must be enabled for `/bff-service/inventory/*` (pilot). Not enabled → `403 not_enabled`.
+- `GET /whoami` returns the caller's role + capabilities.
+
+## Roles and capability floor
+
+Two kinds of caller, NOT one ladder.
+- Users: four roles, ascending — `viewer < operator < supervisor < admin`. A user holds the highest role bound to them in `inv_role_binding` (only active bindings).
+- Integration: a named API principal (e.g. `noice-sync`), NOT on the ladder. Fixed capability set: `stock.view`, `master.maintain` (owned fields only), `doc.post_basic`, `import.commit`, `export`. Everything else is refused (adjust, reverse, count variance, backdate, stewardship override, config, events).
+
+Capability → minimum user role (the FLOOR; accounts may tighten, never loosen):
+
+| Capability | Min role |
+|---|---|
+| stock.view | viewer |
+| master.maintain | operator |
+| doc.post_basic | operator |
+| count.enter | operator |
+| export | operator |
+| doc.adjust | supervisor |
+| doc.absolute_correction | supervisor |
+| doc.backdate | supervisor |
+| master.deactivate | supervisor |
+| count.post_variance | supervisor |
+| doc.reverse | supervisor |
+| import.commit | supervisor |
+| bom.manage | supervisor |
+| stewardship.override | admin |
+| config.manage | admin |
+| events.manage | admin |
+
+## Conventions
+
+- Master data addressed by business CODE (`item_code`, warehouse `code`, uom `code`, batch `code`), never record id.
+- Idempotency: every write takes a caller-generated `idempotency_key`. Same key + same body → original result, `applied:false`, HTTP 200. Same key + different body → `409 idempotency_key_reused`, nothing posted. First post → HTTP 201, `applied:true`.
+- `effective_at` (ISO) required on every op; cannot be in the future.
+- Backdated = `effective_at` on an earlier account-LOCAL DAY than the record day. Such an op ALSO needs `doc.backdate`, and re-checks the negative-stock floor in effective order. Absolute `target_qty` adjustment CANNOT be backdated (422).
+- Grain of a balance: `item · warehouse · bin · batch · owner`. bin/batch/owner nullable (null=absent=empty, one grain). owner null = manufacturer-owned.
+- Balances are derived → can be stale when you read them. The engine enforces real rules inside the transaction, not against your read.
+
+### HTTP status
+200 read or idempotent replay · 201 first write · 204 delete · 403 not_enabled/forbidden · 404 not_found · 409 conflict (idempotency_key_reused, stale_count_line, stewardship_locked) · 422 validation_failed/policy_violation/policy_unresolved · 501 not_implemented · 503 engine_unavailable.
+
+### Error envelope
+`{ "error": <code>, "message": <str>, ...context }`. Context fields present only when actionable (never null): `policy`, `scope`, `line`, `field`, `managed_by`, `capability`, `requires`. Codes: validation_failed(422), policy_violation(422), policy_unresolved(422), stewardship_locked(409), stale_count_line(409), idempotency_key_reused(409), forbidden(403), not_enabled(403), not_found(404), not_implemented(501), engine_unavailable(503), internal(500).
+
+### Posting result (every operation returns this; some extend it)
+`{ doc_no, doc_status:"posted", applied:bool, movementsWritten:int, balancesUpdated:int, eventsWritten:int }`
+
+## Endpoints
+
+Format: METHOD path — capability — request → response — note.
+
+### Reads (GET)
+- `GET /health` — allowlisted — → `{module,version,status}` — module liveness/version.
+- `GET /whoami` — allowlisted — → `{kind:"user"|"integration", id, display, stamp, role:role|null, roles:[], capabilities:[]}` — who you are + what you may do.
+- `GET /balances` — stock.view — query: item?, warehouse?, bin?, batch?, owner?, role?, group_by? (csv of grain fields), include_zero?(bool), limit?, offset? → `{grain:[...], rolled_up:bool, rows:[{item?,item_name?,warehouse?,warehouse_name?,bin?,batch?,owner?,on_hand,reserved,available,revision?,grains?}], total, zero_rows_suppressed, limit, offset}` — grain or rolled-up stock; mistyped filter narrows to nothing.
+- `GET /explain` — stock.view — query: item(REQUIRED), warehouse?, batch?, owner?, from?, to?, order?(effective|recorded), limit?, offset? → `{grain:{item,warehouse,bin,batch,owner}, order, from?, to?, opening_balance, closing_balance, rows:[{movement_key,movement_type,qty,balance_after,effective_at,recorded_at,actor,document_ref?,backdated}], total, limit, offset, reservations:null, reservations_available:bool, contains_backdated:bool}` — movement history + running balance. balance_after on backdated movement follows RECORDED order.
+- `GET /expiry-exposure` — stock.view — query: warehouse?, item?, days?, include_expired?(bool) → `{as_of, days, rows:[{item,item_name?,warehouse,warehouse_name?,batch,expiry_date,days_remaining,status:"expired"|"expiring",qty}], total_qty_at_risk, expired_qty, expiring_qty, skipped_no_expiry_date, skipped_zero_qty}`.
+- `GET /batches` — stock.view — query: item? → `{rows:[{item,batch_code,mfg_date?,expiry_date?,on_hand,status:"available"|"expired"|"depleted"|"on_hold"|"rejected"}], total, as_of}` — status derived on read.
+- `GET /count-sheet` — count.enter — query: warehouse?, item?, include_zero?(bool) → `{generated_at, lines:[{lineNo,item,item_name?,warehouse,bin,batch,owner,system_qty,balance_revision}], scope:{warehouse?,item?,include_zero}}` — carry balance_revision into the count op.
+
+### Operations — `POST /ops/{op}`
+All take `idempotency_key`, `effective_at`; addressed by code; return posting result. source_ref.type ∈ {po,grn,sales_return,production,transfer_in,opening_migration,manual}.
+- `POST /ops/receive` — doc.post_basic — `{idempotency_key, effective_at, source_ref?{type,id}, lines:[{item, to_warehouse, qty(+), uom, bin?, owner?, batch?{code,mfg_date?,expiry_date?}}]}` → posting result. Movement `receipt`. Batch object required for batch-tracked items (created if new).
+- `POST /ops/issue` — doc.post_basic — `{idempotency_key, effective_at, source_ref?, reason?, lines:[{item, from_warehouse, qty(+), uom, bin?, owner?, batch?(string code)}]}` → posting result + `warnings:[{line,code:"expired_stock_issued",message}]`. Movement `issue`. Batch = string code, must already exist. Short stock → 422 policy_violation negative_stock_allowed.
+- `POST /ops/transfer` — doc.post_basic — `{idempotency_key, effective_at, reason?, lines:[{item, from_warehouse, to_warehouse, qty(+), uom, bin?(src), to_bin?(dest), owner?, batch?(string)}]}` → posting result. Posts TWO movements/line: transfer_out + transfer_in.
+- `POST /ops/adjust` — doc.adjust (absolute target also needs doc.absolute_correction) — `{idempotency_key, effective_at, reason(REQUIRED ∈ {damage,loss,found,quality_rejection,sample,correction,other}), supporting_ref(REQUIRED), lines:[{item, warehouse, qty?(signed delta) XOR target_qty?(absolute), uom, bin?, owner?, batch?(string)}]}` → posting result. Movement `adjustment`. target_qty cannot be backdated (422).
+- `POST /ops/count` — count.enter (+ count.post_variance if any line differs) — `{idempotency_key, effective_at, supporting_ref?, lines:[{item, warehouse, bin?, batch?, owner?, counted_qty(≥0), uom, balance_revision(int, from sheet, REQUIRED)}]}` → posting result + `{variances:int, matched:int}`. Movement `count_variance`. Stale grain → 409 stale_count_line (per line). System qty read from ledger, never from request; variance = counted−system.
+- `POST /ops/opening` — doc.absolute_correction — `{idempotency_key, effective_at, source_note?, lines:[{item, warehouse, qty, uom, bin?, owner?, batch?(string)}]}` → posting result. Movement `opening`. Only allowed while grain has no prior movements (or batch-tracking transition).
+- `POST /ops/production-post` — doc.post_basic — `{idempotency_key, effective_at, bom_version(REQUIRED, must be published), output_qty(+), output:{warehouse, batch?{code,mfg_date?,expiry_date?}, bin?, owner?}, consumes:[{component_item, warehouse, batch?(string), bin?, owner?}]}` → posting result + `warnings:[{line,code:"expired_stock_consumed",message}]`. Movements production_consume(−)+production_output(+), shared genealogy, recipe pinned. Engine derives consume quantities from recipe (scaled+wastage); caller names batches. Every recipe component must have exactly one consume line; extra consume rejected.
+- `POST /ops/reverse` — doc.reverse — `{idempotency_key, document(the reversed doc's idempotency_key = its doc_no), effective_at, reason?}` → posting result + `{reversal_of:string, movementsReversed:int}`. Movement `reversal`.
+
+### Recipes & items
+- `POST /bom/versions` — bom.manage — `{item(producible: semi_finished|finished_good), version_no, output_qty(+), output_uom, effective_from?, notes?, lines:[{component_item, qty_per_output(+), uom, wastage_pct?, consumption_stage?(production|packaging)}]}` → 201 `{version_id, version_no, line_ids:[]}`. Draft. Component ≠ output item.
+- `POST /bom/versions/{id}/publish` — bom.manage — no body → `{version_id, version_no, item, superseded:string|null}`. Makes it the item's one live recipe, supersedes previous. Serialized per item; graph must be acyclic.
+- `PATCH /bom/versions/{id}` — bom.manage — `{output_qty, output_uom, effective_from?, notes?, lines:[...]}` (id in path) → `{version_id, line_ids:[]}`. Refused if version referenced by a posted production run (immutable → create new version). Lines replaced wholesale.
+- `POST /items/{code}/enable-batch-tracking` — master.maintain — no body → `{item, legacy_batch:"LEGACY"|null, grains_reclassified:int, posting?}`. Moves untracked stock into a LEGACY batch (reclassify_out/in) then flips flag. Idempotent.
+
+### Imports & exports
+- `POST /imports` — import.commit — `{entity ∈ {items,warehouses,bins,conversions,batches,opening,boms}, csv(string)}` → `{import_id, entity, status:"staged", total, ok_count, error_count, rows:[{row_no, external_key, verdict:"ok"|"error", rule?, error?}]}`. DRY-RUN, validates with same rules as API, nothing written. Missing required column → 422.
+- `POST /imports/{id}/commit` — import.commit — no body → `{import_id, entity, committed:int, skipped:int, already_committed:bool}`. Masters commit row-wise; opening (documents) all-or-nothing. Idempotent (already_committed:true on replay). Stewardship re-checked at commit.
+- `GET /exports/{entity}` — export — entity ∈ {items,warehouses,bins,conversions,batches,balances,movements} → text/csv (attachment). Masters re-importable (same cols as templates, round-trips to no-op); balances/movements read-only.
+
+### Events (subscriptions) — all need events.manage
+Catalog event types: inventory.document.posted, inventory.movement.posted, inventory.bom.created, inventory.bom.published, inventory.bom.superseded, inventory.bom.edited. Empty selection = all.
+- `POST /subscriptions` — `{name, target_url(http/https), event_types?:[]}` → 201 `{id,name,target_url,event_types,status,cursor,failure_count,last_delivery_at, secret}`. secret shown ONCE, never recoverable. Cursor starts at current high-water mark (from-now-on).
+- `GET /subscriptions` → `{subscriptions:[SubscriptionView]}`. View = `{id,name,target_url,event_types,status:"active"|"paused"|"dead",cursor,failure_count,last_delivery_at}` (no secret).
+- `GET /subscriptions/{id}` → SubscriptionView.
+- `GET /subscriptions/{id}/attempts?limit=50` (max 200) → `{attempts:[{seq,event_id,outcome:"delivered"|"failed",status_code,failure_count,at,next_retry_at,error}]}` newest first.
+- `PATCH /subscriptions/{id}` — `{status:"active"|"paused"}` → SubscriptionView. active also revives a dead sub (clears failure state, continues from cursor).
+- `POST /subscriptions/{id}/replay` — `{cursor:int}` (0 = whole stream; omitted defaults 0) → SubscriptionView. Re-delivers after cursor; revives dead, leaves paused paused.
+- `DELETE /subscriptions/{id}` → 204.
+
+### Admin
+- `POST /admin/recover` — config.manage — `{apply?:bool}` (defaults DRY RUN; apply:true writes) → `{dry_run, scanned, outcomes:[{idempotency_key,doc_no,action:"completed"|"failed"|"too-recent",reason?}], completed, failed, tooRecent, truncated, summary}`. Finishes stranded postings (doc stuck at "posting"): receipt present→posted, absent→failed. Refuses (`refused` field) if store has no receipts at all.
+- `POST /admin/reconcile-events` — events.manage — no body → `{versionsChecked, repaired:[event_id]}`. Re-emits missing bom.created/bom.published events. Idempotent. superseded/edited NOT reconciled.
+
+## Webhook delivery contract
+
+Each event is POSTed to target_url. Headers:
+- `Content-Type: application/json`
+- `X-ERPLite-Signature: t=<epoch-ms>,v1=<hex-hmac>` where hmac = HMAC-SHA256(secret, "<t>.<rawBody>").
+- `X-ERPLite-Event-Id: <event_id>` (dedupe on this)
+- `X-ERPLite-Event-Seq: <seq>`
+
+Body: `{account_id, event_id, seq, event_type, schema_version, entity_type, entity_id, payload, occurred_at, recorded_at}`.
+
+Semantics: ordered by seq, AT LEAST ONCE (dedupe on event_id). Cursor advances one event at a time, only after a 2xx. Non-2xx/timeout → retry with exponential backoff (~1s doubling, capped 5min); after 8 consecutive failures → `dead` (resume via PATCH active or replay). Verify signature against RAW body; reject stale t (replay protection). A published event means the engine COMMITTED, not that a document was finalised.
+
+## Gotchas
+
+- Idempotency key is mandatory on every write and is your retry safety. Reusing a key with different lines is refused, not silently merged.
+- Backdating (earlier local DAY) needs `doc.backdate` and re-validates the negative floor in effective order. Absolute `target_qty` adjustments can never be backdated.
+- Imports are dry-run (`POST /imports`) THEN commit (`POST /imports/{id}/commit`) — masters commit row-wise, opening is all-or-nothing; both idempotent on external_key.
+- Balances/batches are DERIVED and read outside the transaction → can be stale. Don't gate your own logic on a read; the engine enforces at posting.
+- Webhook signature is `t=<ms>,v1=<hmac>` over `t.body` (Stripe-style), header `X-ERPLite-Signature`. Not a bare HMAC of the body.
+- Batch field differs by shape: an OBJECT `{code,mfg_date?,expiry_date?}` on receive/production output (may create), a STRING code elsewhere (must exist).
+- Issue/transfer/count/adjust quantities are entered POSITIVE; the engine applies the sign. A negative quantity is refused.
+- The account is always the token's; there is no cross-account read. Reads never widen on a mistyped code — they narrow to nothing.
+- `reserved`/`available`: reserved is always 0 until the Orders module; `reservations` in explain is null (not empty) until then.
+- Reverse's `document` = the target's idempotency_key (which equals its doc_no today), distinct from reverse's own idempotency_key.
+- 404 vs 501: 404 = name not in contract (typo); 501 = contracted but unbuilt. Unknown `/ops/{x}` returns 404 listing valid operations.

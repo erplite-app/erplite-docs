@@ -1,0 +1,107 @@
+---
+title: "Imports and Exports"
+sidebarTitle: "Imports and exports"
+description: "Load master data and opening stock from CSV with a dry-run before commit, and export any entity."
+---
+
+The import pipeline is the only sanctioned bulk path into the module. It validates every row with the **same rules the API uses**, then commits — never the platform's raw bulk import, which bypasses those rules. Imports are dry-run first, then commit, and are idempotent on each row's external key.
+
+Import and commit both need `import.commit` (supervisor for a user; part of an integration's fixed set). Export needs `export` (operator).
+
+## Import: dry-run
+
+`POST /imports` — parse and validate a file, stage the result, and return a per-row report. Nothing is written yet. Returns `200`.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `entity` | string | ✓ | One of `items`, `warehouses`, `bins`, `conversions`, `batches`, `opening`, `boms`. |
+| `csv` | string | ✓ | The file contents as CSV text. |
+
+```bash
+curl -X POST https://api.erplite.app/bff-service/inventory/imports \
+  -H "Authorization: Bearer $ERPLITE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "entity": "items", "csv": "external_key,item_code,item_name,material_role,base_uom,batch_tracked\nEXT-1,SKU-A,Item A,raw_material,KG,false" }'
+```
+
+**Response** — the dry-run report, with the `import_id` you commit later.
+
+```json
+{
+  "import_id": "imp_9f2",
+  "entity": "items",
+  "status": "staged",
+  "total": 2,
+  "ok_count": 1,
+  "error_count": 1,
+  "rows": [
+    { "row_no": 2, "external_key": "EXT-1", "verdict": "ok" },
+    { "row_no": 3, "external_key": "EXT-2", "verdict": "error", "rule": "unknown_uom", "error": "No unit of measure with code \"KGX\"." }
+  ]
+}
+```
+
+Each row carries `row_no` (1-based, header is line 1), `external_key`, `verdict` (`ok` or `error`), and on an error the `rule` and `error` message. A missing required column fails the whole file with `422`.
+
+## Import: commit
+
+`POST /imports/{id}/commit` — apply a staged import. Returns `200`.
+
+The error policy depends on the entity kind. **Masters** (items, warehouses, bins, conversions, batches) commit row-wise: valid rows commit, rejects are left out. **Documents** (opening) are all-or-nothing. Committing the same import twice applies nothing the second time.
+
+**Response**
+
+```json
+{
+  "import_id": "imp_9f2",
+  "entity": "items",
+  "committed": 1,
+  "skipped": 1,
+  "already_committed": false
+}
+```
+
+`already_committed` is `true` when this import was committed before, so a retry is safe.
+
+<Note>
+Stewardship is re-checked at commit against current state: a field locked to an integration between dry-run and commit causes a master row to be skipped, or a document import to abort.
+</Note>
+
+### Import entities and key columns
+
+| Entity | Key columns |
+|--------|-------------|
+| `items` | `external_key`, `item_code`, `item_name`, `material_role`, `base_uom`, `batch_tracked`, and any custom fields by name |
+| `conversions` | `item_code`, `alternate_uom`, `factor_to_base` |
+| `warehouses` | `code`, `name`, `address` |
+| `bins` | `warehouse`, `code`, `name` |
+| `batches` | `item_code`, `batch_code`, `mfg_date`, `expiry_date`, `supplier_lot` |
+| `opening` | `item_code`, `warehouse`, `bin`, `batch_code`, `owner`, `qty`, `uom`, `unit_cost` — becomes `opening` documents, posted through the engine |
+| `boms` | A recipe version header repeated across its component-line rows; grouped into one version per section |
+
+Every master row carries an `external_key`, so re-uploading the same file is a no-op and changed rows update only what changed.
+
+## Export
+
+`GET /exports/{entity}` — download an entity as CSV. Capability `export`. Returns `text/csv` with a `Content-Disposition` attachment.
+
+**Path parameter** `{entity}` — one of:
+
+| Entity | Columns | Re-importable |
+|--------|---------|---------------|
+| `items` | `external_key`, `item_code`, `item_name`, `material_role`, `base_uom`, `batch_tracked` | yes |
+| `warehouses` | `code`, `name`, `address` | yes |
+| `bins` | `warehouse`, `code`, `name` | yes |
+| `conversions` | `item_code`, `alternate_uom`, `factor_to_base` | yes |
+| `batches` | `item_code`, `batch_code`, `mfg_date`, `expiry_date`, `supplier_lot` | yes |
+| `balances` | `item_code`, `warehouse`, `bin`, `batch`, `owner`, `on_hand`, `reserved`, `available` | no |
+| `movements` | `movement_key`, `movement_type`, `doc_type`, `item_code`, `warehouse`, `bin`, `batch`, `owner`, `qty_base`, `effective_at`, `recorded_at`, `actor` | no |
+
+Master exports use the same columns as the import templates, so an export then re-import round-trips to a no-op. Balances and movements are a read-only projection of the ledger, not import targets.
+
+```bash
+curl "https://api.erplite.app/bff-service/inventory/exports/items" \
+  -H "Authorization: Bearer $ERPLITE_TOKEN" -o inv_items.csv
+```

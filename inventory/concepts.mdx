@@ -1,0 +1,102 @@
+---
+title: "Core Concepts"
+sidebarTitle: "Concepts"
+description: "Movements, balances, grain, idempotency, time, backdating, the eight operations, stewardship, and events."
+---
+
+These are the ideas the API is built on. Read them once and the endpoints follow.
+
+## Movements and balances
+
+A **movement** is a single, immutable line in the ledger: this quantity of this item entered or left this stock position at this time, by this actor. Movements are append-only. They are never updated or deleted. A movement's quantity is a signed decimal in the item's base unit — positive when stock arrives, negative when it leaves.
+
+A **balance** is the current quantity at a stock position. It is a projection: the sum of every movement for that position. The engine stores balances so reads are fast, but recomputes them inside the same transaction that writes each movement, so a balance is always consistent with the ledger it is derived from.
+
+A balance carries three quantities:
+
+| Field | Meaning |
+|-------|---------|
+| `on_hand` | Physically present. |
+| `reserved` | Committed to a demand but not yet issued. Always `0` today — reservations arrive with the Orders module. |
+| `available` | `on_hand − reserved`. |
+
+Because balances are derived, **a balance you read can be stale by the time you act on it.** Do not treat a balance as a lock. The engine enforces the real rules (such as the negative-stock floor) inside the posting transaction, against its own snapshot, not against the number you read a moment earlier.
+
+## The grain of a balance
+
+Stock is not tracked per item alone. It is tracked at a **grain** of five fields, in this order:
+
+```
+item · warehouse · bin · batch · owner
+```
+
+- **item** — the SKU, addressed by its business `item_code`.
+- **warehouse** — where it is, addressed by `code`.
+- **bin** — a location within a warehouse. Only used when the warehouse has bins enabled. Nullable.
+- **batch** — a lot with its own manufacture and expiry dates. Required for batch-tracked items. Nullable.
+- **owner** — who owns the stock. `null` means manufacturer-owned. Nullable.
+
+Two movements are on the same balance only if all five fields match. `bin`, `batch`, and `owner` are nullable, and the engine treats null, absent, and empty consistently as one grain — you do not need to worry about splitting a position by sending an empty string where you meant null.
+
+Reads can roll up the grain. `GET /balances?group_by=item,warehouse` folds bins, batches, and owners together and reports how many grains merged into each row.
+
+## Addressing by business code, never record id
+
+Every request addresses master data by its **business code** — `item_code`, warehouse `code`, unit `code`, batch `code` — never by an internal record id. This keeps your integration readable and stable: you send `SKU-SUGAR-50KG` and `WH-MAIN`, not opaque ids.
+
+The account is always taken from your token. There is no `account` parameter anywhere in the API. Sending one would be ignored.
+
+## Idempotency keys
+
+Every write operation requires an **`idempotency_key`** that you generate. It is what makes a retry safe.
+
+- Post the same key with the **same** lines, and the engine returns the original result without posting again. The response's `applied` field is `false` on such a replay, `true` on the first post. The HTTP status is `201` on the first post and `200` on a replay.
+- Post the same key with **different** lines, and the engine refuses with `409 idempotency_key_reused` and posts nothing. This protects you from a key-generation bug silently losing postings.
+
+Choose a key that is stable for the real-world event you are recording — for example `recv-2026-07-21-po1042-a` for a specific receipt against a specific purchase order. If your network call times out, retry with the same key; you will either complete the original posting or receive its original result.
+
+## Effective time and recorded time
+
+Every movement carries two timestamps, always both:
+
+- **`effective_at`** — the business time the event happened. You supply this on every operation.
+- **`recorded_at`** — the wall-clock time the engine wrote the movement. The engine sets this.
+
+They are usually close, but they can differ, and the difference matters. `effective_at` cannot be in the future — a posting dated ahead of the record clock is refused.
+
+## Backdating
+
+A posting is **backdated** when its `effective_at` falls on an earlier day than the day it is recorded, measured in the account's own timezone. There is one definition module-wide: an earlier account-local **day**, not a millisecond or wall-clock comparison. A posting made minutes after midnight for the previous evening, same calendar day, is not backdated; one dated to yesterday is.
+
+Backdating is a separate permission. Any operation whose `effective_at` is an earlier local day additionally requires the `doc.backdate` capability (supervisor by default), checked before the operation runs. A backdated movement also re-validates the negative-stock floor in effective-time order: the engine confirms the stock position was never driven negative on the historical date, not just today.
+
+One exception: an absolute correction — an `adjust` line that sets a `target_qty` rather than a delta — **cannot be backdated**. "Set the balance to X" is a statement about the balance now and has no coherent past-dated meaning. To correct a past balance, backdate a signed `qty` delta instead.
+
+## The stock operations
+
+Every stock change is one of these operations, posted to `POST /ops/{operation}`. Each writes typed movements:
+
+| Operation | What it does | Movement types | Capability |
+|-----------|--------------|----------------|------------|
+| `receive` | Stock arrives. | `receipt` | `doc.post_basic` |
+| `issue` | Stock leaves. | `issue` | `doc.post_basic` |
+| `transfer` | Stock moves between warehouses. Posts two legs. | `transfer_out`, `transfer_in` | `doc.post_basic` |
+| `adjust` | Correct a quantity, with a reason. Delta or absolute. | `adjustment` | `doc.adjust` |
+| `count` | Post a physical count; variances become adjustments. | `count_variance` | `count.enter` (+ `count.post_variance` if a variance exists) |
+| `opening` | Set a starting balance, only before a grain has history. | `opening` | `doc.absolute_correction` |
+| `production-post` | Run a recipe: consume components, output a product. | `production_consume`, `production_output` | `doc.post_basic` |
+| `reverse` | Undo a posted document with a compensating one. | `reversal` | `doc.reverse` |
+
+A `transfer` reads direction from the movement type, not from the sign — the `transfer_out` leg on the source and the `transfer_in` leg on the destination. A `production-post` links its consume and output movements with a shared genealogy reference and pins the recipe version it used, so the ledger records exactly which recipe made which output.
+
+## Stewardship
+
+A field on a master record can be **owned by an integration** rather than by the account's users. When a field is under stewardship, only that integration may change it; a human editing the same record, or a different integration, is refused with `409 stewardship_locked` naming the owner. This lets an external system of record keep authority over the fields it syncs (a SKU's tax code, say) without freezing the whole record.
+
+An integration identity is a named API principal (for example `noice-sync`), never a user login. Its writes appear in the activity log under that name. There are no badges or tags in the UI — a locked field simply renders read-only, and provenance lives in the activity log. During the current pilot, the only stewardship path exercised is the import pipeline.
+
+## Events and the outbox
+
+Every stock change and recipe change produces an event. Events are written to an append-only **outbox** in the same transaction as the movement, so an event exists if and only if its change committed — no event without a change, no change without an event.
+
+A **subscription** streams those events to a URL you own, in order, signed, at least once. You dedupe on `event_id` and verify the signature. See [Subscribe to stock events](/inventory/guides/subscribe-to-events) for the full contract, and [Events API](/inventory/api/events) for the endpoints.

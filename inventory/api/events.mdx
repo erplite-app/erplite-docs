@@ -1,0 +1,174 @@
+---
+title: "Events API"
+sidebarTitle: "Events"
+description: "Manage subscriptions, read the delivery log, replay from a cursor, and verify the signature."
+---
+
+A subscription streams inventory events to a URL you own — in order, signed, at least once. Every subscription endpoint needs `events.manage` (admin), because a subscription streams every stock change off-platform.
+
+For the end-to-end flow (create, verify, handle retries and replay), see the guide [Subscribe to stock events](/inventory/guides/subscribe-to-events).
+
+## Event catalog
+
+A subscription selects event types, or leaves the selection empty to receive all of them.
+
+| Event type | Fires when |
+|-----------|------------|
+| `inventory.document.posted` | A document (any operation) is posted. |
+| `inventory.movement.posted` | A movement is written. Carries the full movement, including its policy snapshot. |
+| `inventory.bom.created` | A recipe version is created. |
+| `inventory.bom.published` | A recipe version is published. |
+| `inventory.bom.superseded` | A recipe version is superseded by a newer publish. |
+| `inventory.bom.edited` | A draft recipe version is edited. |
+
+## Create a subscription
+
+`POST /subscriptions` — returns `201`. The response includes the signing **secret**, shown exactly once and never recoverable after. Store it immediately.
+
+**Request**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string | ✓ | |
+| `target_url` | string | ✓ | A valid `http(s)` URL. |
+| `event_types` | string[] | | From the catalog. Empty or omitted means all. |
+
+**Response**
+
+```json
+{
+  "id": "sub_abc",
+  "name": "Warehouse sync",
+  "target_url": "https://example.com/hooks/inventory",
+  "event_types": ["inventory.movement.posted"],
+  "status": "active",
+  "cursor": 812,
+  "failure_count": 0,
+  "last_delivery_at": null,
+  "secret": "whsec_…"
+}
+```
+
+A new subscription's `cursor` starts at the account's current high-water mark, so it receives events from creation forward, not the whole history. To backfill, replay to an earlier cursor.
+
+## List and get
+
+`GET /subscriptions` → `{ "subscriptions": [ … ] }`. `GET /subscriptions/{id}` → one subscription. Both return the view shape (no secret):
+
+```json
+{
+  "id": "sub_abc",
+  "name": "Warehouse sync",
+  "target_url": "https://example.com/hooks/inventory",
+  "event_types": ["inventory.movement.posted"],
+  "status": "active",
+  "cursor": 812,
+  "failure_count": 0,
+  "last_delivery_at": "2026-07-24T09:00:00.000Z"
+}
+```
+
+`status` is `active`, `paused`, or `dead`. `cursor` is the last delivered sequence — the subscription's position in the stream.
+
+## Pause or resume
+
+`PATCH /subscriptions/{id}` with `{ "status": "active" | "paused" }` → the updated view.
+
+- `paused` stops delivery and preserves the cursor and failure bookkeeping.
+- `active` resumes, and is also how a `dead` subscription is revived: it clears the failure count, retry timer, and last error, and continues from the cursor — no re-send of acknowledged events, no skip of the one that failed.
+
+## Replay from a cursor
+
+`POST /subscriptions/{id}/replay` with `{ "cursor": <seq> }` → the updated view. Sets the cursor to `cursor` (use `0` to replay the whole account stream) and re-delivers everything after it, in order. Omitting `cursor` defaults to `0`.
+
+Replay clears failure state and revives a `dead` subscription, but leaves a `paused` one paused. At-least-once means the subscriber may see events it already saw; dedupe on `event_id`, exactly as for a retry.
+
+## Delivery log
+
+`GET /subscriptions/{id}/attempts?limit=50` → recent delivery attempts, newest first. `limit` defaults to 50, capped at 200.
+
+```json
+{
+  "attempts": [
+    {
+      "seq": 813,
+      "event_id": "…",
+      "outcome": "delivered",
+      "status_code": 200,
+      "failure_count": 0,
+      "at": "2026-07-24T09:00:01.000Z",
+      "next_retry_at": null,
+      "error": null
+    },
+    {
+      "seq": 813,
+      "event_id": "…",
+      "outcome": "failed",
+      "status_code": 500,
+      "failure_count": 1,
+      "at": "2026-07-24T08:59:00.000Z",
+      "next_retry_at": "2026-07-24T08:59:01.000Z",
+      "error": "HTTP 500"
+    }
+  ]
+}
+```
+
+## Delete
+
+`DELETE /subscriptions/{id}` → `204`. Removes the subscription and its delivery state.
+
+## Delivery format and signature
+
+Each delivery is a `POST` to your `target_url` with a JSON body and these headers:
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `application/json` |
+| `X-ERPLite-Signature` | `t=<epoch-ms>,v1=<hmac>` |
+| `X-ERPLite-Event-Id` | The event's `event_id`. |
+| `X-ERPLite-Event-Seq` | The event's sequence number. |
+
+The signature is `HMAC-SHA256(secret, "<t>.<body>")` as lowercase hex, where `t` is the epoch-millisecond timestamp and `body` is the exact raw request body. Because `t` is inside the signed material, a captured request cannot be replayed with a fresh timestamp, and you can reject anything too old. This is Stripe's scheme.
+
+**Body**
+
+```json
+{
+  "account_id": "acc_123",
+  "event_id": "…",
+  "seq": 813,
+  "event_type": "inventory.movement.posted",
+  "schema_version": 1,
+  "entity_type": "movement",
+  "entity_id": "…",
+  "payload": { },
+  "occurred_at": "2026-07-24T09:00:00.000Z",
+  "recorded_at": "2026-07-24T09:00:00.000Z"
+}
+```
+
+**Verify it** (Node.js):
+
+```js
+const crypto = require("crypto");
+
+function verify(secret, header, rawBody, maxAgeMs = 5 * 60 * 1000) {
+  const parts = Object.fromEntries(header.split(",").map((kv) => {
+    const i = kv.indexOf("=");
+    return [kv.slice(0, i).trim(), kv.slice(i + 1).trim()];
+  }));
+  const t = Number(parts.t);
+  if (!Number.isFinite(t) || !parts.v1) return false;
+  if (Math.abs(Date.now() - t) > maxAgeMs) return false;   // reject stale
+  const expected = crypto.createHmac("sha256", secret).update(`${t}.${rawBody}`).digest();
+  const presented = Buffer.from(parts.v1, "hex");
+  return presented.length === expected.length && crypto.timingSafeEqual(presented, expected);
+}
+```
+
+## Retry, ordering, and the dead state
+
+Delivery is ordered by sequence, at least once. The cursor advances one event at a time and only after a `2xx`, so a crash mid-batch re-sends only from the last acknowledged event, never out of order.
+
+A non-`2xx` response (or a timeout, which counts as a failure) stops the batch and schedules a retry with exponential backoff (from ~1s, doubling, capped at 5 minutes). After 8 consecutive failures the subscription goes `dead` and stops being polled until an admin resumes it with `PATCH … { "status": "active" }` or replays it. A single success resets the failure count.
