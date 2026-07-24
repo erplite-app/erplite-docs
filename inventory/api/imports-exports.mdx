@@ -78,7 +78,7 @@ Stewardship is re-checked at commit against current state: a field locked to an 
 | `warehouses` | `code`, `name`, `address` |
 | `bins` | `warehouse`, `code`, `name` |
 | `batches` | `item_code`, `batch_code`, `mfg_date`, `expiry_date`, `supplier_lot` |
-| `opening` | `item_code`, `warehouse`, `bin`, `batch_code`, `owner`, `qty`, `uom`, `unit_cost` — becomes `opening` documents, posted through the engine |
+| `opening` | `external_key`, `item_code`, `warehouse`, `qty`, `uom`, `effective_at`, and optional `bin`, `batch_code`, `owner`, `source_note` — becomes `opening` documents, posted through the engine. `effective_at` is the opening's as-of date, read from the file (not the import time) so a re-upload is a clean no-op; `external_key` derives the idempotency key |
 | `boms` | A recipe version header repeated across its component-line rows; grouped into one version per section |
 
 Every master row carries an `external_key`, so re-uploading the same file is a no-op and changed rows update only what changed.
