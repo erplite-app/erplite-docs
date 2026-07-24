@@ -102,6 +102,7 @@ Catalog event types: inventory.document.posted, inventory.movement.posted, inven
 ### Admin
 - `POST /admin/recover` — config.manage — `{apply?:bool}` (defaults DRY RUN; apply:true writes) → `{dry_run, scanned, outcomes:[{idempotency_key,doc_no,action:"completed"|"failed"|"too-recent",reason?}], completed, failed, tooRecent, truncated, summary}`. Finishes stranded postings (doc stuck at "posting"): receipt present→posted, absent→failed. Refuses (`refused` field) if store has no receipts at all.
 - `POST /admin/reconcile-events` — events.manage — no body → `{versionsChecked, repaired:[event_id]}`. Re-emits missing bom.created/bom.published events. Idempotent. superseded/edited NOT reconciled.
+- `POST /admin/reconcile-stock` — config.manage — no body → `{account_id, checked_at, grains_checked, movements_checked, drifts:[{grain_key,item,warehouse,bin,batch,owner,stored_on_hand,ledger_on_hand,drift,balance_row_present,movements_present}], duplicate_movements:[{movement_key,grain_key,count}], clean:bool}`. REPORT ONLY (never writes a balance): recomputes each balance from the ledger fold (Σ qty_base) and reports drift + duplicate movement_keys. Emits one idempotent `reconciliation.exception` event when not clean. Repair is a separate manual action.
 
 ## Webhook delivery contract
 
@@ -119,7 +120,7 @@ Semantics: ordered by seq, AT LEAST ONCE (dedupe on event_id). Cursor advances o
 
 - Idempotency key is mandatory on every write and is your retry safety. Reusing a key with different lines is refused, not silently merged.
 - Backdating (earlier local DAY) needs `doc.backdate` and re-validates the negative floor in effective order. Absolute `target_qty` adjustments can never be backdated.
-- Imports are dry-run (`POST /imports`) THEN commit (`POST /imports/{id}/commit`) — masters commit row-wise, opening is all-or-nothing; both idempotent on external_key.
+- Imports are dry-run (`POST /imports`) THEN commit (`POST /imports/{id}/commit`) — masters commit row-wise, opening is all-or-nothing; both idempotent on external_key. Opening CSV columns: `external_key,item_code,warehouse,qty,uom,effective_at` (+ optional bin,batch_code,owner,source_note). `effective_at` is the as-of date FROM THE FILE (not import time), so a re-upload is a clean no-op.
 - Balances/batches are DERIVED and read outside the transaction → can be stale. Don't gate your own logic on a read; the engine enforces at posting.
 - Webhook signature is `t=<ms>,v1=<hmac>` over `t.body` (Stripe-style), header `X-ERPLite-Signature`. Not a bare HMAC of the body.
 - Batch field differs by shape: an OBJECT `{code,mfg_date?,expiry_date?}` on receive/production output (may create), a STRING code elsewhere (must exist).

@@ -1,10 +1,10 @@
 ---
 title: "Admin Endpoints"
 sidebarTitle: "Admin"
-description: "Recover stranded postings and reconcile recipe events. Operational endpoints for a scheduler or an operator."
+description: "Recover stranded postings, reconcile recipe events, and reconcile stock. Operational endpoints for a scheduler or an operator."
 ---
 
-Two operational endpoints for keeping the module healthy. They are idempotent and safe to run on a schedule or on demand.
+Three operational endpoints for keeping the module healthy. They are idempotent and safe to run on a schedule or on demand.
 
 ## Recover stranded postings
 
@@ -76,3 +76,35 @@ Stock postings write their events in the same transaction as the movement, so th
 <Note>
 `bom.superseded` and `bom.edited` are not reconciled: a subscriber can derive a supersession from the next publish, and an edit event's id carries its timestamp, so a missing one cannot be reconstructed exactly.
 </Note>
+
+## Reconcile stock
+
+`POST /admin/reconcile-stock` — check the balance projection against the ledger. Capability `config.manage` (admin). Returns `200`. **Report only** — it never writes a balance.
+
+Balances are derived: each grain's `on_hand` is the running fold of its movements. This recomputes that fold straight from the ledger (the truth) and compares it to the stored projection, per grain. It flags **value drift** (stored ≠ ledger), a **missing projection** (movements with no balance row), an **orphan** (a balance holding stock for a grain with no movements), and **duplicate movement keys**. When it finds anything, it emits one idempotent `reconciliation.exception` event; it never repairs a balance (repair is a separate, manual action). Float summation noise is not mistaken for drift.
+
+**Request** — no body.
+
+**Response**
+
+```json
+{
+  "account_id": "unyuqr",
+  "checked_at": "2026-07-24T00:00:00.000Z",
+  "grains_checked": 128,
+  "movements_checked": 640,
+  "drifts": [
+    { "grain_key": "…", "item": "SKU-SUGAR", "warehouse": "WH-MAIN", "bin": null, "batch": null, "owner": null,
+      "stored_on_hand": 150, "ledger_on_hand": 100, "drift": 50, "balance_row_present": true, "movements_present": true }
+  ],
+  "duplicate_movements": [],
+  "clean": false
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `grains_checked` / `movements_checked` | The scope of the scan. |
+| `drifts[]` | Grains where the stored `on_hand` disagrees with the ledger fold. `drift` is `stored − ledger`. |
+| `duplicate_movements[]` | A `movement_key` written more than once (the append-only ledger must never repeat one). |
+| `clean` | `true` when there is no drift and no duplicate — the zero-drift exit criterion. |
