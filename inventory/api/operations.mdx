@@ -25,7 +25,7 @@ Stock arrives. Movement type `receipt`. Capability `doc.post_basic`.
 | `lines[].uom` | string | ✓ | Unit code. |
 | `lines[].bin` | string | | Destination bin. |
 | `lines[].owner` | string | | Owner; omit for manufacturer-owned. |
-| `lines[].batch` | `{ code, mfg_date?, expiry_date? }` | conditional | Required for batch-tracked items. Created if new. |
+| `lines[].batch` | `{ code, mfg_date?, expiry_date?, supplier_lot? }` | conditional | Required for batch-tracked items. Created if new. `supplier_lot` is the supplier's lot number, written onto the batch when it is created — so a PO/GRN line can be traced to the physical lot. |
 
 ```bash
 curl -X POST https://api.erplite.app/bff-service/inventory/ops/receive \
@@ -37,7 +37,7 @@ curl -X POST https://api.erplite.app/bff-service/inventory/ops/receive \
     "source_ref": { "type": "po", "id": "PO-1042" },
     "lines": [
       { "item": "SKU-SUGAR-50KG", "to_warehouse": "WH-MAIN", "qty": 50, "uom": "BAG50",
-        "batch": { "code": "B-0721-01", "mfg_date": "2026-07-18", "expiry_date": "2027-01-18" } }
+        "batch": { "code": "B-0721-01", "mfg_date": "2026-07-18", "expiry_date": "2027-01-18", "supplier_lot": "ACME-LOT-42" } }
     ]
   }'
 ```
