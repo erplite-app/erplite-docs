@@ -1,0 +1,93 @@
+---
+title: "Post a Stock Operation"
+sidebarTitle: "Post a stock operation"
+description: "Receive stock, read the resulting balance, and retry safely with an idempotency key."
+---
+
+This guide posts a receipt, reads the balance it produced, and shows how retries stay safe. The same pattern applies to every operation — see the full list in [Operations](/inventory/api/operations).
+
+You need `doc.post_basic` (operator, or an integration principal). Confirm with `GET /whoami`.
+
+## 1. Choose an idempotency key
+
+Pick a key that is stable for the real-world event you are recording — for example, a receipt against purchase order PO-1042:
+
+```
+recv-2026-07-21-po1042-a
+```
+
+If your request times out, you retry with this same key. You either complete the original posting or get its original result back — never a double post.
+
+## 2. Post the receipt
+
+```bash
+curl -X POST https://api.erplite.app/bff-service/inventory/ops/receive \
+  -H "Authorization: Bearer $ERPLITE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotency_key": "recv-2026-07-21-po1042-a",
+    "effective_at": "2026-07-21T10:30:00+05:30",
+    "source_ref": { "type": "po", "id": "PO-1042" },
+    "lines": [
+      { "item": "SKU-SUGAR-50KG", "to_warehouse": "WH-MAIN", "qty": 50, "uom": "BAG50",
+        "batch": { "code": "B-0721-01", "mfg_date": "2026-07-18", "expiry_date": "2027-01-18" } }
+    ]
+  }'
+```
+
+A first post returns `201` with `applied: true`:
+
+```json
+{
+  "doc_no": "GRN-00017", "doc_status": "posted", "applied": true,
+  "movementsWritten": 1, "balancesUpdated": 1, "eventsWritten": 2
+}
+```
+
+The `qty` is in `BAG50`; the engine converts to the item's base unit and records both. Items, warehouses, and units are addressed by their business code.
+
+## 3. Read the balance
+
+```bash
+curl "https://api.erplite.app/bff-service/inventory/balances?item=SKU-SUGAR-50KG&warehouse=WH-MAIN" \
+  -H "Authorization: Bearer $ERPLITE_TOKEN"
+```
+
+```json
+{
+  "grain": ["item", "warehouse", "bin", "batch", "owner"],
+  "rolled_up": false,
+  "rows": [
+    { "item": "SKU-SUGAR-50KG", "warehouse": "WH-MAIN", "batch": "B-0721-01",
+      "on_hand": 2500, "reserved": 0, "available": 2500, "revision": 1 }
+  ],
+  "total": 1, "zero_rows_suppressed": 0, "limit": 100, "offset": 0
+}
+```
+
+To see the movement history behind this number, call `GET /explain?item=SKU-SUGAR-50KG&warehouse=WH-MAIN`.
+
+## 4. Retry safely
+
+Re-send the **exact same** request. You get `200` with `applied: false` — the original result, no second posting:
+
+```json
+{ "doc_no": "GRN-00017", "doc_status": "posted", "applied": false,
+  "movementsWritten": 1, "balancesUpdated": 1, "eventsWritten": 2 }
+```
+
+Re-send the same key with **different** lines and the engine refuses with `409 idempotency_key_reused` and posts nothing. Use a new key for a new posting.
+
+## What can go wrong
+
+| Response | Meaning | What to do |
+|----------|---------|------------|
+| `403 forbidden` | You lack the capability. | Check `GET /whoami`; the error names the capability and the role it needs. |
+| `422 validation_failed` | The request is malformed — bad quantity, unknown code, missing batch on a tracked item. | Fix the field named in `field` / `message`. |
+| `422 policy_violation` | A rule refused it — an issue short on stock, an expired batch under a `block` policy, a warehouse that does not accept the item's role. | The `policy`, `scope`, and `message` say which rule and why. |
+| `409 idempotency_key_reused` | The key already committed for different lines. | Use a new key. |
+| `503 engine_unavailable` | The engine store is not ready. | Retry with the same key. Do not change the request. |
+
+## Backdating
+
+If your `effective_at` falls on an earlier day than today in the account's timezone, the operation additionally needs `doc.backdate` (supervisor), and the engine re-checks the negative-stock floor in effective-time order. An absolute "set to X" adjustment cannot be backdated at all. See [Concepts → Backdating](/inventory/concepts#backdating).

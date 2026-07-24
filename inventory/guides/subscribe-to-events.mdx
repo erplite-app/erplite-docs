@@ -1,0 +1,129 @@
+---
+title: "Subscribe to Stock Events"
+sidebarTitle: "Subscribe to events"
+description: "Create a subscription, verify the signature, and handle retries and replay."
+---
+
+A subscription streams every stock change and recipe change to a URL you own — in order, signed, at least once. This guide creates one, verifies a delivery, and handles the failure and replay paths. See the [Events API](/inventory/api/events) for the full endpoint reference.
+
+You need the `events.manage` capability (admin).
+
+## 1. Create the subscription
+
+```bash
+curl -X POST https://api.erplite.app/bff-service/inventory/subscriptions \
+  -H "Authorization: Bearer $ERPLITE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Warehouse sync",
+    "target_url": "https://example.com/hooks/inventory",
+    "event_types": ["inventory.movement.posted", "inventory.document.posted"]
+  }'
+```
+
+Leave `event_types` empty to receive every type. The response includes the signing `secret` **once** — store it now; it is never shown again.
+
+```json
+{
+  "id": "sub_abc", "name": "Warehouse sync",
+  "target_url": "https://example.com/hooks/inventory",
+  "event_types": ["inventory.movement.posted", "inventory.document.posted"],
+  "status": "active", "cursor": 812, "failure_count": 0,
+  "last_delivery_at": null, "secret": "whsec_…"
+}
+```
+
+The cursor starts at the current high-water mark, so you receive events from now on. To backfill history, [replay](#5-replay-when-you-need-to) to an earlier cursor.
+
+## 2. Receive a delivery
+
+Each event is a `POST` to your `target_url` with these headers:
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `application/json` |
+| `X-ERPLite-Signature` | `t=<epoch-ms>,v1=<hmac>` |
+| `X-ERPLite-Event-Id` | The event's id — dedupe on this. |
+| `X-ERPLite-Event-Seq` | The event's sequence number. |
+
+The body:
+
+```json
+{
+  "account_id": "acc_123",
+  "event_id": "…",
+  "seq": 813,
+  "event_type": "inventory.movement.posted",
+  "schema_version": 1,
+  "entity_type": "movement",
+  "entity_id": "…",
+  "payload": { },
+  "occurred_at": "2026-07-24T09:00:00.000Z",
+  "recorded_at": "2026-07-24T09:00:00.000Z"
+}
+```
+
+## 3. Verify the signature
+
+The signature is `HMAC-SHA256(secret, "<t>.<body>")` as lowercase hex, where `t` is the timestamp from the header and `body` is the exact raw request body. Verify against the **raw** body, before any JSON parsing reformats it, and reject anything too old to block replays.
+
+```js
+const crypto = require("crypto");
+
+function verify(secret, header, rawBody, maxAgeMs = 5 * 60 * 1000) {
+  const parts = Object.fromEntries(header.split(",").map((kv) => {
+    const i = kv.indexOf("=");
+    return [kv.slice(0, i).trim(), kv.slice(i + 1).trim()];
+  }));
+  const t = Number(parts.t);
+  if (!Number.isFinite(t) || !parts.v1) return false;
+  if (Math.abs(Date.now() - t) > maxAgeMs) return false;
+  const expected = crypto.createHmac("sha256", secret).update(`${t}.${rawBody}`).digest();
+  const presented = Buffer.from(parts.v1, "hex");
+  return presented.length === expected.length && crypto.timingSafeEqual(presented, expected);
+}
+```
+
+Respond `2xx` only after you have durably accepted the event. Anything else is treated as a failure.
+
+## 4. Handle retries and ordering
+
+Delivery is ordered and at least once:
+
+- The cursor advances one event at a time, and only after your `2xx`. A crash mid-batch re-sends only from the last acknowledged event — never out of order.
+- Because it is at least once, **dedupe on `event_id`.** The same event may arrive twice after a retry or a replay.
+- A non-`2xx` response or a timeout stops the batch and retries with exponential backoff (from ~1s, doubling, capped at 5 minutes).
+- After 8 consecutive failures the subscription goes `dead` and stops being polled. A single success resets the failure count.
+
+Inspect the delivery log to see what happened:
+
+```bash
+curl "https://api.erplite.app/bff-service/inventory/subscriptions/sub_abc/attempts?limit=50" \
+  -H "Authorization: Bearer $ERPLITE_TOKEN"
+```
+
+Revive a dead subscription by resuming it — it continues from the cursor, with no re-send of acknowledged events:
+
+```bash
+curl -X PATCH https://api.erplite.app/bff-service/inventory/subscriptions/sub_abc \
+  -H "Authorization: Bearer $ERPLITE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "status": "active" }'
+```
+
+## 5. Replay when you need to
+
+To re-deliver from a point in the stream — to backfill a new consumer, or recover after a bug on your side — reset the cursor:
+
+```bash
+curl -X POST https://api.erplite.app/bff-service/inventory/subscriptions/sub_abc/replay \
+  -H "Authorization: Bearer $ERPLITE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "cursor": 0 }'
+```
+
+`cursor: 0` replays the whole account stream; any sequence number replays from there. Replay revives a `dead` subscription but leaves a `paused` one paused. Your `event_id` dedupe handles the events you have already seen.
+
+<Warning>
+The signing secret is shown only when you create the subscription. If you lose it, you cannot recover it — delete the subscription and create a new one.
+</Warning>

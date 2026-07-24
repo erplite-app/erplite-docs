@@ -44,6 +44,10 @@
     {
       "name": "Reports",
       "url": "reports"
+    },
+    {
+      "name": "Inventory",
+      "url": "inventory"
     }
   ],
   "anchors": [
@@ -151,6 +155,34 @@
     {
       "group": "Going to Production",
       "pages": ["workflows/testworkflows", "workflows/publishing"]
+    },
+    {
+      "group": "Inventory (Developers)",
+      "pages": [
+        "inventory/overview",
+        "inventory/concepts",
+        "inventory/auth-and-roles"
+      ]
+    },
+    {
+      "group": "API Reference",
+      "pages": [
+        "inventory/api/conventions",
+        "inventory/api/reads",
+        "inventory/api/operations",
+        "inventory/api/recipes-and-items",
+        "inventory/api/imports-exports",
+        "inventory/api/events",
+        "inventory/api/admin"
+      ]
+    },
+    {
+      "group": "Guides",
+      "pages": [
+        "inventory/guides/onboard-by-spreadsheet",
+        "inventory/guides/post-a-stock-operation",
+        "inventory/guides/subscribe-to-events"
+      ]
     }
   ],
   "footerSocials": {

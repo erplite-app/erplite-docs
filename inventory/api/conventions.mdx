@@ -1,0 +1,166 @@
+---
+title: "API Conventions"
+sidebarTitle: "Conventions"
+description: "Base URL, request envelope, the structured error format, HTTP status codes, and idempotency."
+---
+
+This page covers what is true of every endpoint. The endpoint pages that follow assume it.
+
+## Base URL and auth
+
+All endpoints are served under:
+
+```
+https://api.erplite.app/bff-service/inventory
+```
+
+Send a bearer token in `Authorization`, and make sure your account is on the module allowlist. See [Authentication and roles](/inventory/auth-and-roles).
+
+## The endpoints at a glance
+
+| Method | Path | Capability | Page |
+|--------|------|-----------|------|
+| GET | `/health` | any allowlisted caller | [Reads](/inventory/api/reads) |
+| GET | `/whoami` | any allowlisted caller | [Reads](/inventory/api/reads) |
+| GET | `/balances` | `stock.view` | [Reads](/inventory/api/reads) |
+| GET | `/explain` | `stock.view` | [Reads](/inventory/api/reads) |
+| GET | `/expiry-exposure` | `stock.view` | [Reads](/inventory/api/reads) |
+| GET | `/batches` | `stock.view` | [Reads](/inventory/api/reads) |
+| GET | `/count-sheet` | `count.enter` | [Reads](/inventory/api/reads) |
+| POST | `/ops/receive` | `doc.post_basic` | [Operations](/inventory/api/operations) |
+| POST | `/ops/issue` | `doc.post_basic` | [Operations](/inventory/api/operations) |
+| POST | `/ops/transfer` | `doc.post_basic` | [Operations](/inventory/api/operations) |
+| POST | `/ops/adjust` | `doc.adjust` | [Operations](/inventory/api/operations) |
+| POST | `/ops/count` | `count.enter` (+ `count.post_variance`) | [Operations](/inventory/api/operations) |
+| POST | `/ops/opening` | `doc.absolute_correction` | [Operations](/inventory/api/operations) |
+| POST | `/ops/production-post` | `doc.post_basic` | [Operations](/inventory/api/operations) |
+| POST | `/ops/reverse` | `doc.reverse` | [Operations](/inventory/api/operations) |
+| POST | `/bom/versions` | `bom.manage` | [Recipes and items](/inventory/api/recipes-and-items) |
+| POST | `/bom/versions/{id}/publish` | `bom.manage` | [Recipes and items](/inventory/api/recipes-and-items) |
+| PATCH | `/bom/versions/{id}` | `bom.manage` | [Recipes and items](/inventory/api/recipes-and-items) |
+| POST | `/items/{code}/enable-batch-tracking` | `master.maintain` | [Recipes and items](/inventory/api/recipes-and-items) |
+| POST | `/imports` | `import.commit` | [Imports and exports](/inventory/api/imports-exports) |
+| POST | `/imports/{id}/commit` | `import.commit` | [Imports and exports](/inventory/api/imports-exports) |
+| GET | `/exports/{entity}` | `export` | [Imports and exports](/inventory/api/imports-exports) |
+| POST | `/subscriptions` | `events.manage` | [Events](/inventory/api/events) |
+| GET | `/subscriptions` | `events.manage` | [Events](/inventory/api/events) |
+| GET | `/subscriptions/{id}` | `events.manage` | [Events](/inventory/api/events) |
+| GET | `/subscriptions/{id}/attempts` | `events.manage` | [Events](/inventory/api/events) |
+| PATCH | `/subscriptions/{id}` | `events.manage` | [Events](/inventory/api/events) |
+| POST | `/subscriptions/{id}/replay` | `events.manage` | [Events](/inventory/api/events) |
+| DELETE | `/subscriptions/{id}` | `events.manage` | [Events](/inventory/api/events) |
+| POST | `/admin/recover` | `config.manage` | [Admin](/inventory/api/admin) |
+| POST | `/admin/reconcile-events` | `events.manage` | [Admin](/inventory/api/admin) |
+
+## The operation request envelope
+
+Every stock operation (`POST /ops/{operation}`) shares a common envelope. The exact fields per operation are on the [Operations](/inventory/api/operations) page.
+
+```json
+{
+  "idempotency_key": "recv-2026-07-21-po1042-a",
+  "effective_at": "2026-07-21T10:30:00+05:30",
+  "source_ref": { "type": "po", "id": "PO-1042" },
+  "lines": [
+    {
+      "item": "SKU-SUGAR-50KG",
+      "to_warehouse": "WH-MAIN",
+      "qty": 50,
+      "uom": "BAG50",
+      "batch": { "code": "B-0721-01", "mfg_date": "2026-07-18", "expiry_date": "2027-01-18" }
+    }
+  ]
+}
+```
+
+- `idempotency_key` and `effective_at` are required on every operation.
+- Items, warehouses, and units are addressed by **business code**.
+- `source_ref.type`, where accepted, must be one of: `po`, `grn`, `sales_return`, `production`, `transfer_in`, `opening_migration`, `manual`.
+
+## The posting result
+
+Every operation returns a posting result. Some operations extend it (issue and production add `warnings`; count adds `variances` and `matched`; reverse adds `reversal_of`).
+
+```json
+{
+  "doc_no": "GRN-00017",
+  "doc_status": "posted",
+  "applied": true,
+  "movementsWritten": 1,
+  "balancesUpdated": 1,
+  "eventsWritten": 2
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `doc_no` | The generated document number. |
+| `doc_status` | Always `posted` on success. |
+| `applied` | `true` on the first post; `false` when this was an idempotent replay. |
+| `movementsWritten` | Movements the posting added to the ledger. |
+| `balancesUpdated` | Balance grains recomputed. |
+| `eventsWritten` | Outbox events emitted. |
+
+## HTTP status codes
+
+| Status | When |
+|--------|------|
+| `200` | A successful read, or an idempotent replay of a write. |
+| `201` | A write that posted for the first time. |
+| `204` | A successful delete (subscriptions). |
+| `403` | Not allowlisted (`not_enabled`), or the caller lacks the capability (`forbidden`). |
+| `404` | No such route or operation (`not_found`). |
+| `409` | A state conflict the caller can resolve — reused idempotency key, stale count line, stewarded field. |
+| `422` | Understood but refused by a rule — validation or policy. |
+| `501` | A route defined in the contract whose implementation has not shipped. |
+| `503` | The engine store is not ready; retry rather than change the request. |
+
+<Note>
+`404` and `501` are kept distinct on purpose. `404` means "this name is not in the contract — check for a typo". `501` means "this is in the contract but not built yet — come back". An unknown operation name under `/ops/` returns `404` and lists the operations that do exist.
+</Note>
+
+## The error envelope
+
+Errors are JSON, structured, and name their rule. Only `error` and `message` are always present; the other fields appear when they add something actionable, and are omitted entirely (never sent as `null`) when they do not.
+
+```json
+{
+  "error": "policy_violation",
+  "policy": "warehouse_accepts_roles",
+  "scope": "warehouse:WH-FG",
+  "line": 2,
+  "message": "WH-FG does not accept raw_material."
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `error` | Machine-readable code (see below). |
+| `message` | Human-readable, safe to show. |
+| `policy` | The policy that fired, on a `policy_violation` or `policy_unresolved`. |
+| `scope` | What the rule was scoped to (for example `warehouse:WH-FG`), or the offending name. |
+| `line` | The 1-based line number in a multi-line request, when the failure is line-specific. |
+| `field` | The request field at fault, on a validation failure. |
+| `managed_by` | The integration that owns a stewarded field, on `stewardship_locked`. |
+| `capability` / `requires` | The action refused and the role it needs, on `forbidden`. |
+
+### Error codes
+
+| Code | Status | Meaning |
+|------|--------|---------|
+| `validation_failed` | 422 | The request is malformed or self-inconsistent. |
+| `policy_violation` | 422 | A configured rule refused the request. |
+| `policy_unresolved` | 422 | A policy the operation needs is not configured (fails closed). |
+| `stewardship_locked` | 409 | The field belongs to an integration; the module will not overwrite it. |
+| `stale_count_line` | 409 | A count line was read at a balance revision that has since moved. |
+| `idempotency_key_reused` | 409 | The key already committed for different lines; nothing was posted. |
+| `forbidden` | 403 | Authenticated and allowlisted, but the capability is missing. |
+| `not_enabled` | 403 | The module is not enabled for this account. |
+| `not_found` | 404 | No such route or operation. |
+| `not_implemented` | 501 | A contracted route not yet built. |
+| `engine_unavailable` | 503 | The engine store is not ready. |
+| `internal` | 500 | An unexpected error; details are logged, not returned. |
+
+## Idempotency
+
+Every write takes an `idempotency_key` you generate. Retrying with the same key and the same body returns the original result (`applied: false`, status `200`) instead of posting twice. Retrying the same key with a different body returns `409 idempotency_key_reused` and posts nothing. See [Concepts → Idempotency keys](/inventory/concepts#idempotency-keys).

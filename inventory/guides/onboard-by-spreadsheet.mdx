@@ -1,0 +1,100 @@
+---
+title: "Onboard a Manufacturer by Spreadsheet"
+sidebarTitle: "Onboard by spreadsheet"
+description: "Load a manufacturer's master data and opening stock through the dry-run then commit import flow."
+---
+
+The fastest way to stand up a new manufacturer is to load their master data and opening balances from spreadsheets through the [import pipeline](/inventory/api/imports-exports). Every import is validated with the same rules the API uses, previewed as a dry-run, and only then committed. This guide walks the full sequence.
+
+You need the `import.commit` capability (supervisor, or an integration principal).
+
+## The order to load in
+
+Load in dependency order, so each entity's references already exist:
+
+<Steps>
+  <Step title="Units of measure">
+    Load `conversions` after the base units exist. Units themselves come from the seeded standard set plus account additions.
+  </Step>
+  <Step title="Items">
+    `items` reference their `base_uom`, so units come first.
+  </Step>
+  <Step title="Warehouses, then bins">
+    `bins` reference their `warehouse`.
+  </Step>
+  <Step title="Batches">
+    `batches` reference their `item_code`. Identity only — quantities come with opening stock.
+  </Step>
+  <Step title="Recipes">
+    `boms` reference component items, so all items must exist first.
+  </Step>
+  <Step title="Opening stock">
+    `opening` references items, warehouses, bins, and batches, so it is last. It posts as `opening` documents through the engine.
+  </Step>
+</Steps>
+
+## Each entity: dry-run, review, commit
+
+For every file, the loop is the same.
+
+<Steps>
+  <Step title="Dry-run">
+    Post the file to `POST /imports` with the `entity` and the CSV text. Nothing is written; you get a per-row report and an `import_id`.
+
+    ```bash
+    curl -X POST https://api.erplite.app/bff-service/inventory/imports \
+      -H "Authorization: Bearer $ERPLITE_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{ "entity": "items", "csv": "external_key,item_code,item_name,material_role,base_uom,batch_tracked\nEXT-1,SKU-A,Item A,raw_material,KG,false" }'
+    ```
+  </Step>
+  <Step title="Review the report">
+    Check `ok_count` and `error_count`. Each error row names the `rule` that failed and a `message`. Fix the source rows and dry-run again — a fresh dry-run stages a new `import_id`.
+
+    ```json
+    {
+      "import_id": "imp_9f2", "entity": "items", "status": "staged",
+      "total": 2, "ok_count": 1, "error_count": 1,
+      "rows": [
+        { "row_no": 2, "external_key": "EXT-1", "verdict": "ok" },
+        { "row_no": 3, "external_key": "EXT-2", "verdict": "error", "rule": "unknown_uom", "error": "No unit of measure with code \"KGX\"." }
+      ]
+    }
+    ```
+  </Step>
+  <Step title="Commit">
+    Commit the staged import by id. Masters commit row-wise (valid rows land, rejects are left out); opening stock is all-or-nothing.
+
+    ```bash
+    curl -X POST https://api.erplite.app/bff-service/inventory/imports/imp_9f2/commit \
+      -H "Authorization: Bearer $ERPLITE_TOKEN"
+    ```
+
+    ```json
+    { "import_id": "imp_9f2", "entity": "items", "committed": 1, "skipped": 1, "already_committed": false }
+    ```
+  </Step>
+</Steps>
+
+## The six entity templates
+
+| Entity | Key columns |
+|--------|-------------|
+| `items` | `external_key`, `item_code`, `item_name`, `material_role`, `base_uom`, `batch_tracked`, plus custom fields by name |
+| `conversions` | `item_code`, `alternate_uom`, `factor_to_base` |
+| `warehouses` | `code`, `name`, `address` |
+| `bins` | `warehouse`, `code`, `name` |
+| `batches` | `item_code`, `batch_code`, `mfg_date`, `expiry_date`, `supplier_lot` |
+| `opening` | `item_code`, `warehouse`, `bin`, `batch_code`, `owner`, `qty`, `uom`, `unit_cost` |
+
+<Note>
+Recipes (`boms`) are a multi-row entity: a version header repeated across its component-line rows, grouped into one version per section, published as a draft.
+</Note>
+
+## Re-running is safe
+
+Every master row carries an `external_key`. Re-uploading the same file is a no-op, and a changed row updates only what changed. Committing an already-committed import applies nothing and returns `already_committed: true`. So if a load is interrupted, just run it again.
+
+## After loading
+
+Verify with the [read APIs](/inventory/api/reads): `GET /balances` should show the opening stock, and `GET /exports/items` should round-trip your item file. Then start posting operations — see [Post a stock operation](/inventory/guides/post-a-stock-operation).

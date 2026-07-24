@@ -1,0 +1,72 @@
+---
+title: "Inventory Module for Developers"
+sidebarTitle: "Overview"
+description: "A stock ledger governed by an engine, with an HTTP API for postings, reads, recipes, imports, and events."
+---
+
+The Inventory module tracks physical stock: what you have, where it is, and every movement that got it there. It is built for developers who integrate with ERPLite over HTTP, not for the generic table screens.
+
+This section is a developer reference. It documents the concepts, the authentication and permission model, and every endpoint. The rest of the ERPLite docs are written for business users and administrators; these pages assume you are writing code against the API.
+
+<Note>
+The module runs as a pilot behind an account allowlist. Your account must be enabled for `/bff-service/inventory/*` before any of these endpoints will answer. See [Authentication and roles](/inventory/auth-and-roles).
+</Note>
+
+## The mental model
+
+Two ideas explain almost everything about how the module behaves.
+
+**Stock is a ledger, not a table.** Every stock change is recorded as one or more immutable **movements** in an append-only ledger. A movement is never edited or deleted. To undo one, you post a new compensating movement. This is the same discipline an accounting system uses: the record of what happened is permanent, and corrections are new entries.
+
+**Balances are derived, never authored.** The quantity you have of an item in a warehouse is not a number someone stores and updates. It is the sum of every movement for that stock position. The module keeps a **balance** projection so reads are fast, but that projection is recomputed from the ledger inside the same transaction that writes each movement. If the balances were ever lost, they could be rebuilt from the movements exactly.
+
+Because of this, an integration never writes a balance and never edits a movement. It **posts an operation** (receive, issue, transfer, and so on), the engine validates it, and the engine writes the movements and updates the balances atomically.
+
+## What the engine governs, and what it does not
+
+Not everything in the module is a ledger. Master data is ordinary ERPLite data.
+
+| Kind | Examples | Where it lives | How you change it |
+|------|----------|----------------|-------------------|
+| **Master data** | Items, warehouses, bins, units of measure, batches | Platform tables (`inv_item`, `inv_warehouse`, and so on) | The generic table APIs, or this module's import pipeline |
+| **Recipes (BoM)** | Bills of material and their versions | Platform tables, but changed only through the engine | The recipe endpoints in this API |
+| **The ledger** | Movements and balances | The engine's own store, not platform tables | Never directly — only by posting an operation |
+
+The engine governs stock postings and recipe changes because those carry rules a plain table cannot hold: idempotency, negative-stock floors, batch and expiry checks, recipe immutability once used, and atomic movement-plus-balance writes. Everything else is normal ERPLite master data you can read and write through the platform's table APIs.
+
+## What you can do with the API
+
+<CardGroup cols={2}>
+  <Card title="Read stock" icon="magnifying-glass" href="/inventory/api/reads">
+    Balances at any grain, the movement history behind a balance, batch status, and expiry exposure.
+  </Card>
+  <Card title="Post operations" icon="arrow-right-arrow-left" href="/inventory/api/operations">
+    Receive, issue, transfer, adjust, count, opening, production, and reverse.
+  </Card>
+  <Card title="Manage recipes" icon="list-check" href="/inventory/api/recipes-and-items">
+    Create, publish, and edit bill-of-material versions; enable batch tracking.
+  </Card>
+  <Card title="Import and export" icon="file-arrow-up" href="/inventory/api/imports-exports">
+    Load master data and opening stock from spreadsheets with a dry-run before commit.
+  </Card>
+  <Card title="Subscribe to events" icon="bell" href="/inventory/api/events">
+    Receive a signed webhook for every stock change and recipe change.
+  </Card>
+  <Card title="Understand the concepts" icon="book" href="/inventory/concepts">
+    Movements, balances, grain, idempotency, backdating, and stewardship.
+  </Card>
+</CardGroup>
+
+## Where to start
+
+<Steps>
+  <Step title="Read the concepts">
+    [Concepts](/inventory/concepts) explains the grain of a balance, idempotency keys, effective versus recorded time, and the eight stock operations. The API will make sense once these do.
+  </Step>
+  <Step title="Get authenticated and allowlisted">
+    [Authentication and roles](/inventory/auth-and-roles) covers the bearer token, the allowlist, and the capability each write needs. Call `GET /whoami` to see what your credential may do.
+  </Step>
+  <Step title="Post your first operation">
+    Follow [Post a stock operation](/inventory/guides/post-a-stock-operation) to receive stock and read the resulting balance.
+  </Step>
+</Steps>
