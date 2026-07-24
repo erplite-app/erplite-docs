@@ -4,7 +4,7 @@ sidebarTitle: "Reads"
 description: "Health, whoami, balances, explain, expiry exposure, batches, and count sheets."
 ---
 
-All reads are `GET`. Balances, explain, expiry, and batches need only `stock.view` (any role, and integrations). The count sheet needs `count.enter`. The account is always taken from your token — no `account` parameter exists.
+All reads are `GET`. Balances, explain, expiry, batches, and item lookup need only `stock.view` (any role, and integrations). The count sheet needs `count.enter`. The account is always taken from your token — no `account` parameter exists.
 
 ## Health
 
@@ -225,3 +225,28 @@ curl "https://api.erplite.app/bff-service/inventory/balances?item=SKU-SUGAR-50KG
 ```
 
 Carry each line's `balance_revision` into the count you post. See the [count operation](/inventory/api/operations#count).
+
+## Item lookup
+
+`GET /items` — validate items by business code. A read seam for other modules (e.g. Purchase, validating a catalog or PO line against an Inventory item before it raises a PO). `stock.view`.
+
+`?codes=A,B,C` returns **one entry per requested code, in order** — an unknown code comes back `exists:false` rather than being omitted, so you get a definite answer for every line. With **no `codes`**, it returns the whole catalog.
+
+**Response**
+
+```json
+{
+  "items": [
+    { "code": "SKU-SUGAR", "exists": true, "active": true, "material_role": "raw_material", "batch_tracked": false, "base_uom": "KG" },
+    { "code": "SKU-GONE", "exists": false, "active": false, "material_role": null, "batch_tracked": null, "base_uom": null }
+  ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `exists` | Whether an item with this code exists. |
+| `active` | `false` when the item is deactivated (or absent). |
+| `material_role` | e.g. `raw_material` — `null` when absent. |
+| `batch_tracked` | Whether receipts require a batch. |
+| `base_uom` | The base unit's business code. |
