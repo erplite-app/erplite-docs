@@ -1,0 +1,232 @@
+---
+title: "Events"
+sidebarTitle: "Events"
+description: "The seven event types, subscription management, the signed webhook contract, and replay."
+---
+
+Purchase publishes a domain event for every act that changes a commitment. A subscription delivers those events to a URL you own, signed, in order, at least once.
+
+Every route on this page needs `config.manage` (admin) — **including the reads, and including for an integration**. A subscription streams every order, receipt and price this account raises to a URL somebody typed, so it is a governance decision. A machine credential cannot subscribe itself to the account's event stream.
+
+## The catalog
+
+### `GET /event-types` — `config.manage`
+
+```json
+{
+  "event_types": [
+    "purchase.recommendation.raised",
+    "purchase.recommendation.resolved",
+    "purchase.po.approved",
+    "purchase.po.amended",
+    "purchase.po.cancelled",
+    "purchase.grn.posted",
+    "purchase.policy.changed"
+  ]
+}
+```
+
+Served from the same set the emitter validates against and the subscription service gates on. Build your form from this rather than typing the list — a hand-written copy drifts silently, and a type your form offers but nothing emits produces a subscription that looks healthy and never fires.
+
+## The seven events
+
+| Type | When | Notable payload fields |
+|------|------|------------------------|
+| `purchase.po.approved` | An order becomes a live commitment | `auto_approved`, `approval_threshold_snapshot`, `total`, `lines[]` |
+| `purchase.po.amended` | A live commitment changed | `previous_total`, `total`, `awaiting_reapproval` |
+| `purchase.po.cancelled` | A commitment is withdrawn | `received_stands` |
+| `purchase.grn.posted` | Goods received and stock moved | Purchase's and Inventory's receipt numbers |
+| `purchase.recommendation.raised` | Replenishment advises a purchase | `item`, `warehouse`, `shortfall_qty` |
+| `purchase.recommendation.resolved` | Coverage recovered; advice retired | `item`, `warehouse` |
+| `purchase.policy.changed` | A governance or reorder policy changed | The key, the scope, the new value |
+
+Three payload fields exist because a consumer could not safely derive them:
+
+- **`auto_approved`** — a consumer reconciling spend needs to know whether a person looked at it. The threshold snapshot is carried alongside because that is the number the decision was made against; a later policy change must not make a past approval look wrong.
+- **`awaiting_reapproval`** — an amendment can send an order back for approval. A consumer treating an amended order as still-committed would be wrong, and cannot work it out from the totals alone.
+- **`received_stands`** — a partly-received order can be cancelled, and what was delivered stays in stock. A consumer reading "cancelled" as "nothing happened" would reverse a receipt that is real.
+
+### Example payload
+
+```json
+{
+  "account_id": "unyuqr",
+  "event_id": "purchase.po.approved:PO-000512:2026-08-02T09:14:22.481Z",
+  "seq": 1841,
+  "event_type": "purchase.po.approved",
+  "schema_version": "1",
+  "entity_type": "purchase_order",
+  "entity_id": "PO-000512",
+  "occurred_at": "2026-08-02T09:14:22.481Z",
+  "recorded_at": "2026-08-02T09:14:22.622Z",
+  "payload": {
+    "po_no": "PO-000512",
+    "vendor_code": "ACME",
+    "warehouse": "WH-MAIN",
+    "currency": "INR",
+    "total": 24500,
+    "expected_date": "2026-08-12",
+    "auto_approved": false,
+    "approval_threshold_snapshot": 250000,
+    "lines": [
+      { "item_code": "SKU-SUGAR-50KG", "ordered_qty": 10, "uom": "BAG50", "unit_price": 2450 }
+    ]
+  }
+}
+```
+
+The `event_id` is built from the type, the entity and the moment it occurred. That is deliberate: it makes the id **derivable**, so a repair sweep re-deriving a lost event produces the same id rather than publishing a second copy of something already delivered. Dedupe on it.
+
+## Subscriptions
+
+### `POST /subscriptions` — `config.manage`
+
+```json
+{
+  "name": "erp-ledger-sync",
+  "target_url": "https://hooks.example.com/erplite/purchase",
+  "event_types": ["purchase.po.approved", "purchase.grn.posted"]
+}
+```
+
+An empty or omitted `event_types` means **all** types.
+
+`201`:
+
+```json
+{
+  "id": "sub_01JG...",
+  "name": "erp-ledger-sync",
+  "target_url": "https://hooks.example.com/erplite/purchase",
+  "event_types": ["purchase.po.approved", "purchase.grn.posted"],
+  "status": "active",
+  "cursor": 1840,
+  "failure_count": 0,
+  "last_delivery_at": null,
+  "secret": "whsec_9f2a..."
+}
+```
+
+<Warning>
+**The secret is shown once.** This response is the only place it ever exists outside your own records. The stored copy is encrypted and no read route returns it. If you lose it, delete the subscription and create another.
+</Warning>
+
+The cursor starts at the current high-water mark, so a new subscription receives events **from now on**, not the whole history. Use replay if you want the backlog.
+
+### There is no edit route
+
+Create, pause, resume, replay, delete — and no `PUT`.
+
+Subscription config is immutable after creation on purpose. The delivery worker holds a **copy** of the target URL, the selected types and the encrypted secret, because it runs outside any request and has no platform token. An edit route would change the platform record and leave the worker delivering to the old URL under the old secret, with both stores looking correct.
+
+Changing a subscription means deleting it and creating another, which mints a new secret and says so.
+
+### `GET /subscriptions` — `config.manage`
+
+```json
+{ "subscriptions": [ { "id": "sub_01JG...", "status": "active", "…": "…" } ] }
+```
+
+No `secret` on any read.
+
+### `GET /subscriptions/{id}` — `config.manage`
+
+The subscription directly.
+
+### `GET /subscriptions/{id}/attempts` — `config.manage`
+
+The delivery log, newest first. `?limit=` defaults to 50 and is clamped to 200 — a nonsense value reads as unspecified rather than producing a `422`, because a limit is a display preference.
+
+```json
+{
+  "attempts": [
+    {
+      "seq": 1841,
+      "event_id": "purchase.po.approved:PO-000512:2026-08-02T09:14:22.481Z",
+      "outcome": "delivered",
+      "status_code": 200,
+      "failure_count": 0,
+      "at": "2026-08-02T09:14:23.101Z",
+      "next_retry_at": null,
+      "error": null
+    }
+  ]
+}
+```
+
+### `PATCH /subscriptions/{id}` — `config.manage`
+
+```json
+{ "status": "paused" }
+```
+
+Only `active` and `paused` are accepted. **`dead` is not a status you can set.** It is a conclusion the delivery worker reaches after repeated failures, and setting it by hand would stop delivery while looking like the subscriber's fault.
+
+Setting `active` also revives a dead subscription: it clears the failure state and continues from the cursor.
+
+### `POST /subscriptions/{id}/replay` — `config.manage`
+
+```json
+{ "cursor": 1700 }
+```
+
+Resets the cursor and re-delivers everything after it. **The default is `0`, meaning the whole stream.** That is the destructive-looking choice and it is the right default: an administrator reaching for replay has usually lost a subscriber's data and wants all of it. At-least-once delivery already means you dedupe on `event_id`, so a replay is the same hazard you handle on every retry.
+
+Replay revives a dead subscription and leaves a paused one paused.
+
+### `DELETE /subscriptions/{id}` — `config.manage`
+
+`204`.
+
+## The delivery contract
+
+Each event is `POST`ed to your `target_url`.
+
+### Headers
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `application/json` |
+| `X-ERPLite-Signature` | `t=<epoch-ms>,v1=<hex-hmac>` |
+| `X-ERPLite-Event-Id` | The event id — dedupe on this |
+| `X-ERPLite-Event-Seq` | The sequence number |
+
+### Verifying the signature
+
+The HMAC is `HMAC-SHA256(secret, "<t>.<rawBody>")`. It is **not** a bare HMAC of the body.
+
+```js
+const [tPart, v1Part] = header.split(',');
+const t = tPart.slice(2);                 // strip "t="
+const signature = v1Part.slice(3);        // strip "v1="
+
+const expected = crypto
+  .createHmac('sha256', secret)
+  .update(`${t}.${rawBody}`)
+  .digest('hex');
+
+const ok = crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+```
+
+Verify against the **raw** body, before any JSON parse. A re-serialised object will not match what was signed.
+
+Reject a stale `t` as replay protection.
+
+### Semantics
+
+- **Ordered by `seq`**, and the cursor advances one event at a time, only after a `2xx`.
+- **At least once.** Dedupe on `event_id`.
+- A non-`2xx` or a timeout is a failed delivery. Retries back off exponentially from 1 second, capped at 5 minutes.
+- After **8 consecutive failures** the subscription goes `dead` and stops being polled. Resume it with `PATCH {"status":"active"}` or with a replay.
+
+A published event means the module **committed** the change. Emission runs after the state change, and it never blocks or reverses it.
+
+### If an event goes missing
+
+Emission is deliberately total: it never throws, because by the time it runs the state change has already committed, and refusing would report a failure for something that visibly happened.
+
+The repair for a lost event is [`POST /admin/reconcile-events`](/purchase/api/admin#post-adminreconcile-events), which re-derives events from the records that caused them. It is idempotent by construction.
+
+## Receiving events *from* Inventory
+
+Purchase also **consumes** Inventory's stock events, so a large issue can trigger a replenishment re-evaluation rather than waiting for the next sweep. That inbound endpoint is documented under [Admin](/purchase/api/admin#post-eventsinventoryaccountid). You do not normally call it — Inventory's delivery worker does.

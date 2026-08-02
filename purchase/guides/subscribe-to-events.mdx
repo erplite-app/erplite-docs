@@ -1,0 +1,219 @@
+---
+title: "Subscribe to purchase events"
+sidebarTitle: "Subscribe to events"
+description: "Create a subscription, verify the signature, handle retries and replay, and repair a lost event."
+---
+
+Purchase publishes an event for every act that changes a commitment. This guide creates a subscription, verifies a delivery, and covers what to do when one goes missing.
+
+```bash
+export TOKEN="…"
+export BASE="https://api.erplite.app/bff-service/purchase"
+```
+
+Every call here needs `config.manage` (admin). A subscription streams every order, receipt and price this account raises to a URL somebody typed, so it is a governance decision — and it is one an integration credential cannot make for itself.
+
+## 1. See what you can subscribe to
+
+```bash
+curl -s "$BASE/event-types" -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "event_types": [
+    "purchase.recommendation.raised",
+    "purchase.recommendation.resolved",
+    "purchase.po.approved",
+    "purchase.po.amended",
+    "purchase.po.cancelled",
+    "purchase.grn.posted",
+    "purchase.policy.changed"
+  ]
+}
+```
+
+Build any picker from this endpoint rather than from a copied list. A hand-written copy drifts silently, and a type your form offers but nothing emits produces a subscription that looks healthy and never fires.
+
+## 2. Create the subscription
+
+```bash
+curl -s -X POST "$BASE/subscriptions" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "name": "erp-ledger-sync",
+    "target_url": "https://hooks.example.com/erplite/purchase",
+    "event_types": ["purchase.po.approved", "purchase.grn.posted"]
+  }'
+```
+
+Omit `event_types` to receive all seven.
+
+```json
+{
+  "id": "sub_01JG...",
+  "name": "erp-ledger-sync",
+  "target_url": "https://hooks.example.com/erplite/purchase",
+  "event_types": ["purchase.po.approved", "purchase.grn.posted"],
+  "status": "active",
+  "cursor": 1840,
+  "failure_count": 0,
+  "last_delivery_at": null,
+  "secret": "whsec_9f2a…"
+}
+```
+
+<Warning>
+**Store the secret now.** This response is the only place it ever exists outside your own records. The stored copy is encrypted and no read route returns it. If you lose it, delete the subscription and create another — which mints a new secret.
+</Warning>
+
+The cursor starts at the current high-water mark, so you receive events **from now on**. Use replay if you want the backlog.
+
+## 3. Verify the signature
+
+Every delivery carries:
+
+```
+X-ERPLite-Signature: t=1754132062481,v1=9c1f8b…
+X-ERPLite-Event-Id: purchase.po.approved:PO-000512:2026-08-02T09:14:22.481Z
+X-ERPLite-Event-Seq: 1841
+```
+
+The HMAC is over `"<t>.<rawBody>"`, **not** over the body alone.
+
+```js
+import crypto from 'node:crypto';
+
+// Capture the RAW body. A re-serialised object will not match what was signed.
+app.post('/erplite/purchase', express.raw({ type: 'application/json' }), (req, res) => {
+  const header = req.get('X-ERPLite-Signature') ?? '';
+  const [tPart, v1Part] = header.split(',');
+  const t = tPart?.slice(2);          // strip "t="
+  const sent = v1Part?.slice(3);      // strip "v1="
+
+  if (!t || !sent) return res.status(400).end();
+
+  // Replay protection: refuse a stale timestamp.
+  if (Math.abs(Date.now() - Number(t)) > 5 * 60 * 1000) return res.status(400).end();
+
+  const expected = crypto
+    .createHmac('sha256', process.env.PURCHASE_WEBHOOK_SECRET)
+    .update(`${t}.${req.body.toString('utf8')}`)
+    .digest('hex');
+
+  const a = Buffer.from(sent);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).end();
+
+  const event = JSON.parse(req.body.toString('utf8'));
+
+  // Dedupe. Delivery is AT LEAST ONCE.
+  if (alreadyHandled(event.event_id)) return res.status(200).end();
+
+  handle(event);
+  res.status(200).end();
+});
+```
+
+Three things this code gets right and that are easy to get wrong:
+
+- **Raw body, before any JSON parse.** Express's `json()` middleware discards the raw bytes; use `raw()` on this route.
+- **`t` is part of the signed string.** A bare HMAC of the body will never match.
+- **Dedupe on `event_id`.** Delivery is at least once, and every retry and replay resends the same id.
+
+## 4. Understand the delivery rules
+
+- Events arrive **ordered by `seq`**. The cursor advances one at a time, and only after a `2xx`.
+- Anything that is not a `2xx` — including a timeout — is a failed delivery.
+- Retries back off exponentially from 1 second, capped at 5 minutes.
+- After **8 consecutive failures** the subscription goes `dead` and stops being polled.
+
+**Return `200` fast, then do the work.** A slow handler produces timeouts, and eight of those in a row take you offline.
+
+## 5. Check the delivery log
+
+```bash
+curl -s "$BASE/subscriptions/sub_01JG.../attempts?limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "attempts": [
+    {
+      "seq": 1841,
+      "event_id": "purchase.po.approved:PO-000512:2026-08-02T09:14:22.481Z",
+      "outcome": "delivered",
+      "status_code": 200,
+      "failure_count": 0,
+      "at": "2026-08-02T09:14:23.101Z",
+      "next_retry_at": null,
+      "error": null
+    }
+  ]
+}
+```
+
+Newest first. `limit` defaults to 50 and is clamped to 200.
+
+## 6. Pause, revive and replay
+
+Pause while you deploy:
+
+```bash
+curl -s -X PATCH "$BASE/subscriptions/sub_01JG..." \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{ "status": "paused" }'
+```
+
+Only `active` and `paused` are accepted. **`dead` is not something you can set** — it is a conclusion the delivery worker reaches, and setting it by hand would stop delivery while looking like your fault.
+
+Setting `active` also revives a dead subscription: it clears the failure state and continues from the cursor.
+
+Re-deliver from a point:
+
+```bash
+curl -s -X POST "$BASE/subscriptions/sub_01JG.../replay" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{ "cursor": 1700 }'
+```
+
+**Omitting `cursor` replays the whole stream.** That is the default and it is deliberate: somebody reaching for replay has usually lost a subscriber's data and wants all of it. Because you already dedupe on `event_id`, a replay is the same hazard you handle on every retry.
+
+## 7. There is no edit route
+
+Create, pause, resume, replay, delete — and no `PUT`.
+
+Subscription config is immutable on purpose. The delivery worker holds a **copy** of the target URL, the selected types and the encrypted secret, because it runs outside any request and has no platform token. An edit route would change the platform record and leave the worker delivering to the old URL under the old secret, with both stores looking correct.
+
+To change a subscription, delete it and create another.
+
+## 8. If an event never arrives
+
+Emission never throws. By the time it runs, the state change has already committed — refusing there would report a failure for something that visibly happened. So a torn write can leave an event unpublished.
+
+The repair:
+
+```bash
+curl -s -X POST "$BASE/admin/reconcile-events" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "checked": 214,
+  "repaired": ["purchase.po.cancelled:PO-000498:2026-07-29T14:22:10.019Z"]
+}
+```
+
+It re-derives events from the records that caused them and emits the missing ones. Every event id is derived from the record and the moment it happened, and the outbox has a unique index on it — so this is **idempotent by construction** and safe to run repeatedly, on a schedule, or while the module is live.
+
+## Which fields you should not derive yourself
+
+Three payload fields exist because a consumer could not safely work them out:
+
+| Field | On | Why it is carried |
+|-------|-----|-------------------|
+| `auto_approved` | `po.approved` | Whether a person looked at it. The threshold snapshot rides alongside, so a later policy change never makes a past approval look wrong. |
+| `awaiting_reapproval` | `po.amended` | An amendment can send an order back for approval. Treating an amended order as still-committed would be wrong, and the totals alone do not say. |
+| `received_stands` | `po.cancelled` | A partly-received order can be cancelled and the delivered goods stay in stock. Reading "cancelled" as "nothing happened" would reverse a real receipt. |

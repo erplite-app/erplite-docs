@@ -1,0 +1,306 @@
+---
+title: "Goods receipts"
+sidebarTitle: "Goods receipts"
+description: "Receive goods against an order or ad-hoc, capture batches, handle over-receipts, reverse a posting, and read open supply."
+---
+
+A goods receipt records what physically arrived. Posting one is the only thing in this module that moves stock — and even then, Purchase does not write it. It calls Inventory across a seam.
+
+A receipt is addressed by its **number**, allocated when the draft is created.
+
+## The receipt object
+
+```json
+{
+  "recordId": "rec_01JC...",
+  "grn_no": "GRN-000045",
+  "grn_status": "posted",
+  "warehouse": "WH-MAIN",
+  "receipt_date": "2026-08-11",
+  "vendor_code": "ACME",
+  "po_no": "PO-000512",
+  "adhoc_reason": null,
+  "override_reason": null,
+  "inv_receipt_doc_no": "RCV-00218",
+  "receive_idempotency_key": "grn-post-GRN-000045",
+  "reversal_of": null,
+  "external_key": null,
+  "updated_on": "2026-08-11T06:40:11.203Z",
+  "lines": [
+    {
+      "recordId": "rec_01JD...",
+      "po_line": "rec_01JB...",
+      "item_code": "SKU-SUGAR-50KG",
+      "ordered_ref_qty": 10,
+      "received_qty": 10,
+      "accepted_qty": 9,
+      "rejected_qty": 1,
+      "reject_reason": "One bag torn in transit.",
+      "batch_code": "B-0811-01",
+      "mfg_date": "2026-08-05",
+      "expiry_date": "2027-02-05",
+      "supplier_lot": "ACM-LOT-99231",
+      "uom": "BAG50",
+      "unit_cost": 2450
+    }
+  ]
+}
+```
+
+### Two receipt numbers, on purpose
+
+`grn_no` is **Purchase's** number — what an operator quotes. `inv_receipt_doc_no` is **Inventory's** number for the same physical delivery. Both are on the receipt and both are in the export.
+
+An accountant tracing a query between the two modules needs the pair. Exporting one and calling it "the receipt number" is how somebody concludes the two systems disagree.
+
+`inv_receipt_doc_no` is `null` on every draft, and stays `null` after posting if nothing was accepted — in that case no Receive call was made.
+
+### `accepted_qty` is what moves stock
+
+`accepted_qty` is derived: `received_qty − rejected_qty`. Only the accepted quantity is sent to Inventory. Rejected goods are recorded but post no stock.
+
+`rejected_qty > 0` requires a `reject_reason`.
+
+## Create and edit a draft
+
+### `POST /grns` — `grn.post`
+
+Against a purchase order:
+
+```json
+{
+  "warehouse": "WH-MAIN",
+  "receipt_date": "2026-08-11",
+  "po_no": "PO-000512",
+  "lines": [
+    {
+      "po_line": "rec_01JB...",
+      "received_qty": 10,
+      "rejected_qty": 1,
+      "reject_reason": "One bag torn in transit.",
+      "batch_code": "B-0811-01",
+      "mfg_date": "2026-08-05",
+      "expiry_date": "2027-02-05",
+      "supplier_lot": "ACM-LOT-99231",
+      "unit_cost": 2450
+    }
+  ]
+}
+```
+
+Ad-hoc, with no order behind it:
+
+```json
+{
+  "warehouse": "WH-MAIN",
+  "vendor_code": "ACME",
+  "adhoc_reason": "Free replacement sample sent after the damaged delivery.",
+  "lines": [
+    { "item_code": "SKU-SUGAR-50KG", "received_qty": 2, "batch_code": "B-0811-02" }
+  ]
+}
+```
+
+`201` with the receipt at `"grn_status": "draft"`.
+
+The two shapes are mutually exclusive, and the rules are exact:
+
+| Field | With `po_no` | Ad-hoc |
+|-------|--------------|--------|
+| `po_no` | Required | Omitted |
+| `adhoc_reason` | Refused | **Required** |
+| `vendor_code` | Optional; checked against the order | **Required** |
+| `po_line` on a line | **Required** | Refused |
+| `item_code` on a line | Derived from `po_line`; checked if also sent | **Required** |
+
+`po_no` **cannot be changed** after the draft is created. It is absent from the edit type, and sending it anyway is refused.
+
+### Which orders can be received against
+
+`approved`, `partially_received`, `received` and `closed`.
+
+`draft` and `pending_approval` are refused: those orders have never been sent to a supplier, so nothing can have arrived against them. `cancelled` is refused because the commitment was withdrawn.
+
+`received` and `closed` are allowed deliberately. A tolerated over-receipt legitimately lands stock against an order whose lines are already satisfied — whether a particular quantity is tolerable is the tolerance policy's judgement at post time, not a status test at draft time.
+
+### `PUT /grns/{no}` — `grn.post`
+
+A patch: every field is optional and an omitted one is left alone. `lines`, if supplied, **replaces** the line set — send a line's `record_id` to keep or edit it.
+
+Only while the receipt is a `draft`.
+
+### Batch capture
+
+If an item is batch-tracked in Inventory, `batch_code` is **required** on its line. The receipt is refused without it, at draft time rather than at post time, so an operator finds out while they are still holding the delivery note.
+
+`mfg_date` and `expiry_date` are calendar days (`YYYY-MM-DD`). `supplier_lot` is carried through to Inventory and written onto the batch, which is what makes a supplier traceable from a stock movement.
+
+<Note>
+There is no discard route for an abandoned receipt draft. A draft you no longer want stays a draft. This is a known gap rather than a decision.
+</Note>
+
+## Post a receipt
+
+### `POST /grns/{no}/post` — `grn.post`, plus `receipt.override` if you send a reason
+
+```json
+{ "override_reason": "Supplier shipped a full pallet; agreed with buying." }
+```
+
+The body is optional and carries **one** field. A body that could name lines would invite "post these lines only" — and a half-posted delivery is exactly what the module forbids. A receipt is corrected as a draft and then posted whole.
+
+`200` with the posted receipt **and what the posting did**:
+
+```json
+{
+  "grn": { "grn_no": "GRN-000045", "grn_status": "posted", "…": "…" },
+  "inv_receipt_doc_no": "RCV-00218",
+  "movements_posted": 1,
+  "replayed": false,
+  "po_status": "partially_received",
+  "open_supply_unchanged": [],
+  "tolerance_warnings": [],
+  "override_reason": null
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `inv_receipt_doc_no` | Inventory's number. `null` when nothing was accepted, so no call was made. |
+| `movements_posted` | Stock movements Inventory wrote. |
+| `replayed` | `true` when Inventory matched an already-committed posting and wrote nothing new. |
+| `po_status` | The order's status after the receipt. `null` on an ad-hoc receipt. |
+| `open_supply_unchanged` | Order lines whose commitment this receipt did **not** reduce, and why. |
+| `tolerance_warnings` | Lines that received more than was ordered and posted anyway. |
+| `override_reason` | Set when a supervisor posted over the policy's refusal. |
+
+### `open_supply_unchanged` is normal, not an error
+
+Two reasons appear:
+
+- `replayed` — the receipt had already been withdrawn from the position. The signature of a retry.
+- `already_settled` — the line was fully satisfied before this delivery arrived. That is an over-receipt, and the tolerance policy's business.
+
+Both are reported rather than left to be inferred. A position that did not move is worth being able to see.
+
+### Over-receipt tolerance
+
+The `over_receipt_tolerance` policy resolves at post time, most-specific-wins across vendor, material category and account.
+
+| Mode | Behaviour |
+|------|-----------|
+| `allow_with_warning` | Posts, and reports the line in `tolerance_warnings`. |
+| `block_beyond_pct` | Refuses beyond `pct` percent of the open quantity. |
+
+A blocked receipt is a `422` naming the policy — and carrying `requires: "receipt.override"`, because a supervisor can post it:
+
+```json
+{
+  "error": "policy_violation",
+  "policy": "over_receipt_tolerance",
+  "scope": "vendor:ACME",
+  "line": 1,
+  "requires": "receipt.override",
+  "message": "Line 1 receives 15 against 10 open, which is beyond the 5% tolerance."
+}
+```
+
+An operator who then supplies an `override_reason` meets a `403` — they asked to override and may not. A supervisor who supplies one posts it, and the reason lands on the receipt and on the audit trail.
+
+**Under-receipt is always allowed.** There is no policy that could refuse a short delivery; the order simply stays partially received.
+
+### What posting does, in order
+
+1. Resolve the tolerance policy and judge every line.
+2. Call Inventory's Receive with the accepted quantities and the key `grn-post-<grn_no>`.
+3. Record Inventory's receipt number on the receipt and flip it to `posted`.
+4. Reduce the open-supply position for each order line.
+5. Roll up the order's line quantities and move its status.
+6. Emit `purchase.grn.posted`.
+
+The posting is **all or nothing** across its lines. It is idempotent across the seam: a retried post carries the same key, so Inventory recognises it and returns `replayed: true` rather than receiving the goods twice.
+
+## Reverse a posted receipt
+
+### `POST /grns/{no}/reverse` — `grn.reverse`
+
+```json
+{ "reason": "Wrong warehouse; goods physically at WH-COLD." }
+```
+
+`reason` is **required**. Undoing a receipt removes stock, and the record of why is the only thing distinguishing a correction from goods going missing.
+
+`200` with the **compensating receipt** — a new document, not the original edited:
+
+```json
+{
+  "grn": { "grn_no": "GRN-000046", "reversal_of": "GRN-000045", "…": "…" },
+  "reversal_of": "GRN-000045",
+  "movements_reversed": 1,
+  "replayed": false,
+  "po_status": "approved"
+}
+```
+
+A posted receipt has no edge out of `posted` at all. A mistake is corrected by a second document pointing at the first, and both remain as the history. The reversal restores the open-supply position and rolls the order's status back.
+
+## Read receipts
+
+### `GET /grns` — `view`
+
+| Query | Effect |
+|-------|--------|
+| `vendor` | Only this vendor's receipts |
+| `po` | Only receipts against this order |
+| `status` | `draft`, `posted` or `cancelled` |
+
+```json
+{ "grns": [ { "grn_no": "GRN-000045", "…": "…" } ] }
+```
+
+### `GET /grns/{no}` — `view`
+
+The receipt with its lines, or `404`.
+
+## Open supply
+
+### `GET /open-supply` — `view`
+
+What is already on order, by item and warehouse. This is the number the replenishment engine compares against stock.
+
+| Query | Effect |
+|-------|--------|
+| `item` | Filter to one item |
+| `warehouse` | Filter to one warehouse |
+| `horizon_days` | Only lines expected within this many days |
+
+```json
+{
+  "horizon_until": "2026-08-16T23:59:59.999Z",
+  "positions": [
+    {
+      "item": "SKU-SUGAR-50KG",
+      "warehouse": "WH-MAIN",
+      "pending_base_qty": 500,
+      "lines": [
+        {
+          "po_no": "PO-000512",
+          "line_id": "rec_01JB...",
+          "open_base_qty": 500,
+          "expected_date": "2026-08-12T00:00:00.000Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Three things to know.
+
+**`item` and `warehouse` are filters, not a required grain.** Send either, both, or neither. A question matching more positions than one read will answer is refused with a `422` telling you how to narrow it — rather than answered with a first page. A short list of arrivals reads exactly like a complete one and understates what is already on order.
+
+**Quantities are in base units, and the field names say so.** `pending_base_qty` and `open_base_qty` are directly comparable with Inventory's `available`.
+
+**`horizon_days` filters this same position; it never runs a second calculation.** Under a horizon, `pending_base_qty` is the total of the lines shown — not the grain's whole open commitment. A filtered view whose total came from the unfiltered position would print a number that does not add up to the rows beneath it.
+
+`horizon_until` appears **only** when you asked for a horizon. The window is anchored on server time, which you do not have, so it is the half of the answer you cannot compute — and it is what keeps a saved report readable a week later.

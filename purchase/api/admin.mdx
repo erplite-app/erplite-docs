@@ -1,0 +1,125 @@
+---
+title: "Admin and repair"
+sidebarTitle: "Admin"
+description: "Force a reorder sweep, repair missing events, and the inbound endpoint Inventory delivers to."
+---
+
+Two administrative routes and one inbound webhook. The first two need `config.manage` (admin). The third has no session at all.
+
+## `POST /admin/sweep-reorder`
+
+Run the reorder sweep **now**, over every grain with a policy.
+
+Capability: `config.manage`. Sweeping the whole account's replenishment is a governance action, not an operator's.
+
+No request body.
+
+```json
+{
+  "started_at": "2026-08-02T11:02:00.114Z",
+  "finished_at": "2026-08-02T11:02:04.882Z",
+  "grains_visited": 318,
+  "raised": 4,
+  "covered": 302,
+  "resolved": 2,
+  "no_policy": 9,
+  "deferred": 1,
+  "failed": []
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `grains_visited` | Item-and-warehouse pairs evaluated |
+| `raised` | New recommendations created |
+| `covered` | Grains with enough stock plus open supply |
+| `resolved` | Recommendations retired because coverage recovered |
+| `no_policy` | Grains with no reorder policy — the normal majority on a real account |
+| `deferred` | Grains where a need exists but **another producer owns the open recommendation** |
+| `failed` | Grains whose evaluation threw. The sweep continues past them. |
+
+### Why this route exists
+
+The scheduled interval alone is untestable in production. After changing a policy, or repairing something, somebody has to be able to ask "does the queue agree now?" without waiting an hour.
+
+It runs the **same** sweep the scheduled worker runs and returns the same report, so a forced sweep and a scheduled one converge on the same rows by construction rather than by intention.
+
+### `deferred` is counted separately on purpose
+
+It is the one outcome that means two systems disagree about a shelf and a person should look. Folded into `covered` it would be invisible. Folded into `failed` it would read as a fault, which it is not.
+
+### `failed` does not stop the sweep
+
+One grain that throws does not abandon the other three hundred. Each failure is reported with its item, warehouse and error.
+
+## `POST /admin/reconcile-events`
+
+Repair events that a cross-store tear left missing.
+
+Capability: `config.manage` — it writes to the account's event stream, which subscribers act on.
+
+No request body.
+
+```json
+{
+  "checked": 214,
+  "repaired": [
+    "purchase.po.cancelled:PO-000498:2026-07-29T14:22:10.019Z"
+  ]
+}
+```
+
+### Why it is needed
+
+Event emission is deliberately **total**: it never throws. By the time it runs, the state change has already committed, so refusing would report a failure for something that visibly happened. That decision is only sound because something re-derives a lost event afterwards. This route is that something.
+
+It walks cancelled orders, posted receipts and resolved recommendations, derives the event each one should have produced, checks whether that event exists, and emits the ones that do not.
+
+### It is idempotent by construction
+
+Every event id is derived from the record and the moment it happened, and the outbox has a unique index on it. Running this repeatedly, on a schedule, or while the module is live is safe.
+
+That is also why the document views carry `updated_on`. The live emit and the repair must date an event **identically** — if one used a wall clock and the other used the record, they would derive different ids for the same act, and the repair would publish a second copy of an event already delivered.
+
+A record the platform returned no timestamp for is **skipped** rather than dated by guess.
+
+## `POST /events/inventory/{accountId}`
+
+The inbound endpoint. Inventory's delivery worker posts stock events here so Purchase can re-evaluate replenishment on a grain that just moved, rather than waiting for the next sweep.
+
+**You do not normally call this.** It is documented because its authentication model differs from every other route in the module.
+
+### It has no session authentication
+
+It cannot. The caller is a delivery worker holding a subscription secret and no user. So this route is mounted **outside** the module's authenticate-then-allowlist chain, and the HMAC signature is the entirety of its authentication.
+
+The account appears **in the path and inside the signed body**, and the receiver refuses them disagreeing. The path alone is a claim; the body is the part that was signed.
+
+### Responses
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Accepted — `{ "accepted": true, "duplicate": false }` |
+| `401` | The signature did not verify, whatever the internal reason |
+
+A `401` is returned for every verification failure, without saying which check failed. The delivery worker retries a `5xx` and gives up on a `4xx`, which is right — a bad signature will not fix itself on the next attempt.
+
+### Setting it up
+
+Purchase's inbound receiver needs a signing key, configured as `PUR_EVENT_SECRET_KEY` on the service. You then create a subscription **in Inventory** pointing at this URL. See [Inventory → Events](/inventory/api/events).
+
+<Note>
+Mount order is load-bearing and invisible. This router must be mounted **before** the authenticated one on the same path prefix. Inside the authenticated chain, every delivery is rejected with a `401` before its HMAC is ever checked.
+</Note>
+
+## When the engine store is starting
+
+Routes that depend on the module's own store answer `503 engine_unavailable` while it comes up, rather than degrading.
+
+```json
+{ "error": "engine_unavailable", "message": "The purchase engine store is not ready." }
+```
+
+Retry rather than changing the request. The module will not answer "you have no subscriptions" or "nothing is on order" when it does not know — an empty list from a still-starting engine reads as fact, and is an administrator's cue to create a second subscription that duplicates the first.
+
+Event **emission** is the deliberate exception. It never blocks an operation, because it runs after the state change has committed. A lost event is repaired by `/admin/reconcile-events` above.

@@ -1,0 +1,199 @@
+---
+title: "API Conventions"
+sidebarTitle: "Conventions"
+description: "Base URL, every endpoint at a glance, the structured error format, and HTTP status codes."
+---
+
+This page covers what is true of every endpoint. The endpoint pages that follow assume it.
+
+## Base URL and auth
+
+All endpoints are served under:
+
+```
+https://api.erplite.app/bff-service/purchase
+```
+
+Send a bearer token in `Authorization`, and make sure your account is on the module allowlist. See [Authentication and roles](/purchase/auth-and-roles).
+
+## The endpoints at a glance
+
+| Method | Path | Capability | Page |
+|--------|------|-----------|------|
+| GET | `/health` | any allowlisted caller | below |
+| GET | `/whoami` | any allowlisted caller | [Auth and roles](/purchase/auth-and-roles) |
+| POST | `/vendors` | `vendor.maintain` | [Masters](/purchase/api/masters) |
+| PUT | `/vendors/{code}` | `vendor.maintain` | [Masters](/purchase/api/masters) |
+| POST | `/vendors/{code}/deactivate` | `master.deactivate` | [Masters](/purchase/api/masters) |
+| POST | `/vendors/{code}/reactivate` | `master.deactivate` | [Masters](/purchase/api/masters) |
+| GET | `/vendors` | `view` | [Masters](/purchase/api/masters) |
+| GET | `/vendors/{code}` | `view` | [Masters](/purchase/api/masters) |
+| POST | `/catalog` | `catalog.maintain` | [Masters](/purchase/api/masters) |
+| PUT | `/catalog/{id}` | `catalog.maintain` | [Masters](/purchase/api/masters) |
+| POST | `/catalog/{id}/deactivate` | `master.deactivate` | [Masters](/purchase/api/masters) |
+| POST | `/catalog/{id}/reactivate` | `master.deactivate` | [Masters](/purchase/api/masters) |
+| GET | `/catalog` | `view` | [Masters](/purchase/api/masters) |
+| GET | `/catalog/{id}` | `view` | [Masters](/purchase/api/masters) |
+| POST | `/pos` | `po.draft` | [Purchase orders](/purchase/api/purchase-orders) |
+| PUT | `/pos/{no}` | `po.draft` | [Purchase orders](/purchase/api/purchase-orders) |
+| POST | `/pos/{no}/submit` | `po.draft` | [Purchase orders](/purchase/api/purchase-orders) |
+| POST | `/pos/{no}/approve` | `po.approve` | [Purchase orders](/purchase/api/purchase-orders) |
+| POST | `/pos/{no}/amend` | `po.amend` | [Purchase orders](/purchase/api/purchase-orders) |
+| POST | `/pos/{no}/cancel` | `po.cancel` | [Purchase orders](/purchase/api/purchase-orders) |
+| POST | `/pos/{no}/lines/{line}/short-close` | `po.short_close` | [Purchase orders](/purchase/api/purchase-orders) |
+| POST | `/pos/{no}/close` | `po.close` | [Purchase orders](/purchase/api/purchase-orders) |
+| GET | `/pos` | `view` | [Purchase orders](/purchase/api/purchase-orders) |
+| GET | `/pos/{no}` | `view` | [Purchase orders](/purchase/api/purchase-orders) |
+| POST | `/grns` | `grn.post` | [Goods receipts](/purchase/api/receipts) |
+| PUT | `/grns/{no}` | `grn.post` | [Goods receipts](/purchase/api/receipts) |
+| POST | `/grns/{no}/post` | `grn.post` (+ `receipt.override`) | [Goods receipts](/purchase/api/receipts) |
+| POST | `/grns/{no}/reverse` | `grn.reverse` | [Goods receipts](/purchase/api/receipts) |
+| GET | `/grns` | `view` | [Goods receipts](/purchase/api/receipts) |
+| GET | `/grns/{no}` | `view` | [Goods receipts](/purchase/api/receipts) |
+| GET | `/open-supply` | `view` | [Goods receipts](/purchase/api/receipts) |
+| POST | `/reorder-policies` | `config.manage` | [Replenishment](/purchase/api/replenishment) |
+| PUT | `/reorder-policies/{id}` | `config.manage` | [Replenishment](/purchase/api/replenishment) |
+| POST | `/reorder-policies/{id}/deactivate` | `config.manage` | [Replenishment](/purchase/api/replenishment) |
+| POST | `/reorder-policies/{id}/reactivate` | `config.manage` | [Replenishment](/purchase/api/replenishment) |
+| GET | `/reorder-policies` | `config.manage` | [Replenishment](/purchase/api/replenishment) |
+| GET | `/reorder-policies/{id}` | `config.manage` | [Replenishment](/purchase/api/replenishment) |
+| GET | `/recommendations` | `view` | [Replenishment](/purchase/api/replenishment) |
+| POST | `/recommendations/{id}/dismiss` | `recommendation.review` | [Replenishment](/purchase/api/replenishment) |
+| POST | `/recommendations/convert` | `recommendation.review` | [Replenishment](/purchase/api/replenishment) |
+| POST | `/recommendations/ingest` | `recommendation.ingest` | [Replenishment](/purchase/api/replenishment) |
+| POST | `/policies` | `config.manage` | [Policies](/purchase/api/policies) |
+| PUT | `/policies/{id}` | `config.manage` | [Policies](/purchase/api/policies) |
+| POST | `/policies/{id}/deactivate` | `config.manage` | [Policies](/purchase/api/policies) |
+| POST | `/policies/{id}/reactivate` | `config.manage` | [Policies](/purchase/api/policies) |
+| POST | `/policies/{id}/reattach` | `config.manage` | [Policies](/purchase/api/policies) |
+| GET | `/policies` | `config.manage` | [Policies](/purchase/api/policies) |
+| GET | `/policies/{id}` | `config.manage` | [Policies](/purchase/api/policies) |
+| GET | `/exports/po` | `export` | [Imports and exports](/purchase/api/imports-exports) |
+| GET | `/exports/grn` | `export` | [Imports and exports](/purchase/api/imports-exports) |
+| GET | `/exports/{entity}` | `export` | [Imports and exports](/purchase/api/imports-exports) |
+| POST | `/imports` | `import.commit` | [Imports and exports](/purchase/api/imports-exports) |
+| POST | `/imports/{id}/commit` | `import.commit` | [Imports and exports](/purchase/api/imports-exports) |
+| GET | `/imports/{id}` | `import.commit` | [Imports and exports](/purchase/api/imports-exports) |
+| GET | `/event-types` | `config.manage` | [Events](/purchase/api/events) |
+| POST | `/subscriptions` | `config.manage` | [Events](/purchase/api/events) |
+| GET | `/subscriptions` | `config.manage` | [Events](/purchase/api/events) |
+| GET | `/subscriptions/{id}` | `config.manage` | [Events](/purchase/api/events) |
+| GET | `/subscriptions/{id}/attempts` | `config.manage` | [Events](/purchase/api/events) |
+| PATCH | `/subscriptions/{id}` | `config.manage` | [Events](/purchase/api/events) |
+| POST | `/subscriptions/{id}/replay` | `config.manage` | [Events](/purchase/api/events) |
+| DELETE | `/subscriptions/{id}` | `config.manage` | [Events](/purchase/api/events) |
+| POST | `/admin/sweep-reorder` | `config.manage` | [Admin](/purchase/api/admin) |
+| POST | `/admin/reconcile-events` | `config.manage` | [Admin](/purchase/api/admin) |
+| POST | `/events/inventory/{accountId}` | *signature only* | [Admin](/purchase/api/admin) |
+
+## `GET /health`
+
+Module liveness and version. It sits behind auth and the allowlist like everything else — the health of a module you cannot use is not information you are owed.
+
+```json
+{ "module": "purchase", "version": "0.4.0", "status": "ok" }
+```
+
+## Action routes are sub-paths
+
+Where the specification writes `/pos/{no}:submit`, this API serves `POST /pos/{no}/submit`. The contract — an action on one document — is identical. The trailing-segment form is used because the router parses an adjacent-colon custom method ambiguously.
+
+Every lifecycle transition is a `POST` to a sub-path, never a `PATCH` that sets a status field. There is no route anywhere in this module that lets you write `po_status`, `grn_status` or a `status` field directly.
+
+## Documents are never deleted
+
+There is no `DELETE` route for a vendor, a catalog line, a policy, an order or a receipt.
+
+- A vendor or catalog line is **deactivated**, never removed, and its code is never reused.
+- An order is **cancelled** or **closed**.
+- A posted receipt is **reversed** by a new compensating document that points at it. Both remain as the history.
+
+The only `DELETE` in the module is for an event subscription.
+
+## HTTP status codes
+
+| Status | When |
+|--------|------|
+| `200` | A successful read, or a successful action on an existing document. |
+| `201` | A resource created for the first time. |
+| `204` | A subscription deleted. |
+| `401` | A webhook delivery whose signature did not verify. |
+| `403` | Not allowlisted (`not_enabled`), or the caller lacks the capability (`forbidden`). |
+| `404` | No such route, document, or named entity. |
+| `409` | A state conflict the caller can resolve by re-reading current state. |
+| `422` | Understood but refused by a rule — validation or policy. |
+| `501` | A route defined in the contract whose implementation has not shipped. |
+| `503` | The engine store is not ready; retry rather than change the request. |
+
+<Note>
+`404` and `501` are kept distinct on purpose. `404` means "this name is not in the contract — check for a typo". `501` means "this is in the contract but not built yet — come back".
+</Note>
+
+## The error envelope
+
+Errors are JSON, structured, and name their rule. Only `error` and `message` are always present; the other fields appear when they add something actionable, and are omitted entirely (never sent as `null`) when they do not.
+
+```json
+{
+  "error": "policy_violation",
+  "policy": "over_receipt_tolerance",
+  "scope": "vendor:ACME",
+  "line": 2,
+  "requires": "receipt.override",
+  "message": "Line 2 receives 15 over the 10 remaining, which is beyond the 5% tolerance. A supervisor can post this with an override reason."
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `error` | Machine-readable code (see below). |
+| `message` | Human-readable, safe to show. |
+| `policy` | The policy that fired, on a `policy_violation` or `policy_unresolved`. |
+| `scope` | What the rule was scoped to, or the offending name. |
+| `line` | The 1-based line number in a multi-line request, when the failure is line-specific. |
+| `field` | The request field at fault, on a validation failure. |
+| `capability` | The action refused, on a `forbidden`. |
+| `requires` | The role a refused action needs — or, on a `policy_violation`, the capability that **could** carry the request through. |
+
+### `requires` on a 422 is a way out
+
+Most policy violations have no way out: the request is simply wrong, and naming a capability would imply somebody could force it through. An over-tolerance receipt is the exception. A refusal carrying `requires: "receipt.override"` is telling an operator that a supervisor standing next to them can post it — which is a different experience from a refusal that does not say so.
+
+### Error codes
+
+| Code | Status | Meaning |
+|------|--------|---------|
+| `validation_failed` | 422 | The request is malformed or self-inconsistent. |
+| `policy_violation` | 422 | A configured rule refused the request. |
+| `policy_unresolved` | 422 | A policy the operation needs is not configured (fails closed). |
+| `state_conflict` | 409 | The document is not in a state that allows this transition. |
+| `idempotency_key_reused` | 409 | A key already committed for different input; nothing was written. |
+| `forbidden` | 403 | Authenticated and allowlisted, but the capability is missing. |
+| `not_enabled` | 403 | The module is not enabled for this account. |
+| `not_found` | 404 | No such route, document, or entity. |
+| `not_implemented` | 501 | A contracted route not yet built. |
+| `engine_unavailable` | 503 | The engine store is not ready. |
+| `internal` | 500 | An unexpected error; details are logged, not returned. |
+
+## Derived fields are refused, not ignored
+
+Every write route refuses a body carrying a field the module owns, with a `422` naming the field. It does not quietly drop it.
+
+On a purchase order that includes `po_no`, `po_status`, `currency`, `payment_terms`, `approval_threshold_snapshot`, `created_by`, `submitted_by`, `approved_by`, `last_amended_by`, `cancel_reason` and `close_reason`. On a line it includes `received_qty`, `accepted_qty`, `rejected_qty`, `pending_qty`, `base_qty`, `conversion_factor`, `line_total`, `short_closed_qty` and `line_status`.
+
+The rule matters most for `last_amended_by`. Without it, the first thing a caller could do is name somebody else as the last amender and defeat separation of duties from the wire.
+
+Identity fields are refused for a different reason: a `vendor_code`, a catalog line's `(vendor, item)` pair, and a policy's scope are immutable. Changing one means creating a different row with its own history. The refusal names the path that does what you meant.
+
+## Reasons are required, and they are audited
+
+These routes require a `reason` in the body, and a missing, empty or too-short one is a `422` naming the field:
+
+- Every write on `/policies` and `/reorder-policies`, including deactivate and reactivate
+- `POST /pos/{no}/amend`
+- `POST /pos/{no}/cancel`
+- `POST /pos/{no}/close`
+- `POST /pos/{no}/lines/{line}/short-close`
+- `POST /grns/{no}/reverse`
+
+The reason goes onto the audit record, and for cancel and close onto the document itself (`cancel_reason`, `close_reason`). It is never stored as a field you can query as ordinary data on a policy — neither policy table has a reason column.

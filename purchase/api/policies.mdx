@@ -1,0 +1,152 @@
+---
+title: "Governance policies"
+sidebarTitle: "Governance policies"
+description: "Approval thresholds, self-approval, over-receipt tolerance — how they resolve, and what happens when a row goes missing."
+---
+
+Three keys govern what may happen in the module. Every route on this resource, **including the reads**, needs `config.manage` (admin). These three keys decide who may commit the company's money, so an operator seeing them is not assumed.
+
+A policy is addressed by its **record id**. Its business identity is the `(scope_type, scope_ref, policy_key)` triple, which does not belong in a URL path.
+
+## The three keys
+
+| Key | Value shape | Scopes it may be set at |
+|-----|-------------|--------------------------|
+| `approval_threshold` | `{ "amount": 250000 }` | `account` only |
+| `self_approval` | `{ "allowed": false }` | `account` only |
+| `over_receipt_tolerance` | `{ "mode": "allow_with_warning" }` or `{ "mode": "block_beyond_pct", "pct": 10 }` | `account`, `material_category`, `vendor` |
+
+### Why two of them are account-scoped only
+
+Spend authority and separation of duties are properties of the account. A per-vendor approval threshold would mean the same order needs an approver or does not depending on who you buy from — which is not a control, it is a loophole.
+
+Over-receipt tolerance is genuinely different. How much over-delivery you accept reasonably varies by supplier and by material, which is why it is the one multi-scope key and why the specificity ordering exists at all.
+
+## The policy object
+
+```json
+{
+  "recordId": "rec_01JF...",
+  "scope_type": "vendor",
+  "scope_ref": "ACME",
+  "policy_key": "over_receipt_tolerance",
+  "policy_value": { "mode": "block_beyond_pct", "pct": 5 },
+  "status": "active",
+  "external_key": null,
+  "stewardship_source": "account"
+}
+```
+
+`scope_ref` is `null` for account scope, and a vendor code or material category otherwise.
+
+`stewardship_source` says who maintains the row: `purchase-installer` (the module's seed corrects drift here), `account` (you own it), or `null` on a row written before the column existed. It is the raw stored value rather than a boolean, so a value nobody in this module wrote reads back as what it is.
+
+## Resolution
+
+**Most specific wins.** For `over_receipt_tolerance`: a vendor row beats a material-category row, which beats the account row.
+
+Four rules apply before a value is used:
+
+- An **inactive** row does not resolve. Its value never leaks into the answer.
+- A row at a scope its key does not support is **ignored**. A `self_approval` row somebody hand-created at vendor scope grants nothing.
+- **Contradictory duplicate rows** at the winning scope are an error, not a coin toss. The module refuses rather than picking one, because an administrator who set the threshold to 250,000 and has a stale `0` row beside it would otherwise see every order need approval for ever, with the screen showing 250,000 and no explanation anywhere.
+- **A stored value that is not usable** is an error too. `{"allowed": "false"}` is a broken row, not a missing one.
+
+### A missing row degrades; it does not brick the module
+
+Each of the three keys carries a hard-coded fallback equal to its seeded value, used **only** when no row resolves at all.
+
+This matters because the seeded rows are ordinary data. An administrator can edit, deactivate or delete them in the platform UI — and governance resolution fails closed, where closed means *block*. Without a fallback, deleting the `approval_threshold` row would make every submit fail for ever, and deleting `over_receipt_tolerance` would refuse every receipt, with no error message that pointed at the cause.
+
+The fallback is confined to "no row resolves" precisely so that a loud misconfiguration cannot become a quiet wrong answer. A contradictory pair and an unparseable value both still refuse.
+
+The seed rows exist for a different reason: so an administrator can **see and edit** the values in a settings screen instead of discovering them in code.
+
+## Values are checked strictly
+
+A number must be a number and a boolean must be a boolean. Nothing is coerced.
+
+The reason has a name: `Boolean("false")` is `true`. A lenient `self_approval` parser would read `{"allowed": "false"}` as **permission to self-approve**, silently switching off separation of duties while the row on screen still read "false". So the rule is uniform rather than selectively lenient, and a UI posting form strings gets a clear `422` instead of a silent control bypass.
+
+**Unknown keys are refused, not dropped.** `{"mode": "allow_with_warning", "pct": 10}` is rejected rather than stored with the `pct` ignored. Storing it would leave an administrator believing a 10% cap was in force when nothing enforced one.
+
+Two rules on `over_receipt_tolerance` are worth stating because they are tighter than they look:
+
+- `pct` is **required** for `block_beyond_pct` — there is no percentage to invent.
+- `pct` is **forbidden** for `allow_with_warning` — there is nothing for it to do.
+
+## `POST /policies` — `config.manage`
+
+```json
+{
+  "scope_type": "vendor",
+  "scope_ref": "ACME",
+  "policy_key": "over_receipt_tolerance",
+  "policy_value": { "mode": "block_beyond_pct", "pct": 5 },
+  "reason": "Acme has over-delivered three times this quarter."
+}
+```
+
+`reason` is **required** on every write. It goes onto the audit record, not onto the policy — there is no reason column.
+
+`201` with the policy.
+
+## `PUT /policies/{id}` — `config.manage`
+
+Editable: `policy_value`, `external_key`. Plus the required `reason`.
+
+`scope_type`, `scope_ref` and `policy_key` are the identity and are immutable — moving a policy to a different scope or key is creating a different policy, with its own audit history. `status` moves only through the lifecycle routes. All four are refused with a message naming the right path.
+
+## `POST /policies/{id}/deactivate` and `/reactivate` — `config.manage`
+
+```json
+{ "reason": "Reverting to the account default." }
+```
+
+## `POST /policies/{id}/reattach` — `config.manage`
+
+Hand a row back to the installer.
+
+```json
+{ "reason": "Standardising tolerance across accounts again." }
+```
+
+A sub-path rather than a field on `PUT`, because it is not an edit of the policy. It changes **who maintains** the row — `stewardship_source` goes back to `purchase-installer` — and the next install is what then moves the value.
+
+## `GET /policies` — `config.manage`
+
+Optional `scope_type` and `policy_key` filters.
+
+```json
+{ "policies": [ { "recordId": "...", "…": "…" } ] }
+```
+
+## `GET /policies/{id}` — `config.manage`
+
+The policy directly, or `404`.
+
+## What each key actually does
+
+### `approval_threshold`
+
+Compared against the order's derived `total` at submit. Below it, submit approves in one step. At or above it, the order goes to `pending_approval`.
+
+The value in force **is snapshotted onto the order** as `approval_threshold_snapshot`. Two things follow: an amendment is judged against the threshold the order was approved under, not today's; and a later policy change never makes a past approval look wrong.
+
+**It defaults to `0`**, which means nothing auto-approves until an administrator raises it. That is the safe default and it surprises people — if every submit is landing on `pending_approval`, this is why.
+
+### `self_approval`
+
+`{"allowed": false}` enforces two rules at approve: the approver may not be the creator, and may not be the last amender. Each produces its own `403` with a distinguishing `requires` value.
+
+`{"allowed": true}` relaxes both. That is the right answer for a one-person account and a deliberate decision for any other.
+
+<Note>
+When module access is granted through a **platform role** rather than to named users, Purchase cannot count how many people hold it — so it cannot tell a one-person account from a fifty-person one. The dashboard's Module access screen shows a headcount beside each role for exactly this reason.
+</Note>
+
+### `over_receipt_tolerance`
+
+Resolved at receipt post time, per line. See [Goods receipts → Over-receipt tolerance](/purchase/api/receipts#over-receipt-tolerance).
+
+Under-receipt is not part of this key and never can be: there is no field here that could refuse a short delivery, because a short delivery is always allowed.
