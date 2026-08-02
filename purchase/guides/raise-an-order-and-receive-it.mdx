@@ -1,0 +1,263 @@
+---
+title: "Raise an order and receive it"
+sidebarTitle: "Raise and receive"
+description: "The whole buying loop in eight calls: vendor, price, order, approval, receipt, stock."
+---
+
+This guide goes from nothing to stock on a shelf. Every call is real and in order.
+
+Set your token and base URL first:
+
+```bash
+export TOKEN="…"
+export BASE="https://api.erplite.app/bff-service/purchase"
+```
+
+## 1. Check what you may do
+
+```bash
+curl -s "$BASE/whoami" -H "Authorization: Bearer $TOKEN"
+```
+
+You need `vendor.maintain`, `catalog.maintain`, `po.draft` and `grn.post` to follow this guide, plus `po.approve` for step 5.
+
+If you get `403 not_enabled`, your account is not on the pilot allowlist yet.
+
+## 2. Create a vendor
+
+```bash
+curl -s -X POST "$BASE/vendors" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "vendor_code": "ACME",
+    "vendor_name": "Acme Ingredients Pvt Ltd",
+    "email": "orders@acme.example",
+    "address": "12 Industrial Layout, Bengaluru 560058",
+    "comms_preference": "email",
+    "email_consent": true,
+    "payment_terms": "NET30",
+    "default_lead_time_days": 7
+  }'
+```
+
+The `address` is not decoration — it is printed on the purchase order PDF the supplier receives. `comms_preference` and `email_consent` decide whether that PDF is emailed at all.
+
+## 3. Add the item to the vendor's catalog
+
+```bash
+curl -s -X POST "$BASE/catalog" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "vendor_code": "ACME",
+    "item_code": "SKU-SUGAR-50KG",
+    "price": 2450,
+    "currency": "INR",
+    "purchase_uom": "BAG50",
+    "lead_time_days": 5,
+    "moq": 10
+  }'
+```
+
+Two things must already be true in **Inventory**, or this is refused with a `422`:
+
+- The item exists and is active.
+- A conversion exists from `BAG50` to the item's base unit.
+
+The second one catches people out. If the item's base unit is `KG` and you buy in 50 kg bags, Inventory needs a `BAG50 → KG` conversion of 50. Without it, a purchase order line in bags cannot be compared with stock in kilograms, so the module refuses to raise one.
+
+## 4. Raise the order
+
+```bash
+curl -s -X POST "$BASE/pos" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "vendor_code": "ACME",
+    "warehouse": "WH-MAIN",
+    "order_date": "2026-08-02",
+    "expected_date": "2026-08-12",
+    "lines": [
+      { "item_code": "SKU-SUGAR-50KG", "ordered_qty": 10, "purchase_uom": "BAG50", "unit_price": 2450 }
+    ]
+  }'
+```
+
+`201`, and the order comes back at `"po_status": "draft"` with a number already allocated — `PO-000512`. Note it down; every later call addresses the order by that number.
+
+The response also carries fields you did not send: `currency` and `payment_terms` snapshotted from the account and the vendor, `conversion_factor` and `base_qty` resolved from the unit, and `approval_threshold_snapshot` once it is submitted.
+
+```bash
+export PO="PO-000512"
+```
+
+## 5. Submit it, and approve it if needed
+
+```bash
+curl -s -X POST "$BASE/pos/$PO/submit" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+No body. Read `po_status` on the response:
+
+- **`approved`** — the total was below the approval threshold. You are done; the commitment is live and the vendor has been notified. Skip to step 6.
+- **`pending_approval`** — somebody with `po.approve` has to approve it.
+
+```bash
+curl -s -X POST "$BASE/pos/$PO/approve" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+<Warning>
+The approval threshold defaults to `0`, so on a fresh account **everything** goes to `pending_approval`. If that is not what you want, an administrator raises it with `POST /policies`.
+</Warning>
+
+If approve returns a `403` with `requires: "approver ≠ creator"`, you are the person who raised it. Get somebody else to approve, or set the `self_approval` policy to `{"allowed": true}` if this is a one-person account.
+
+### Confirm the commitment exists
+
+```bash
+curl -s "$BASE/open-supply?item=SKU-SUGAR-50KG&warehouse=WH-MAIN" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "positions": [
+    { "item": "SKU-SUGAR-50KG", "warehouse": "WH-MAIN", "pending_base_qty": 500, "lines": [ … ] }
+  ]
+}
+```
+
+`500`, not `10` — the position is in **base units**. Ten bags of 50 kg is 500 kg, which is directly comparable with Inventory's stock figure.
+
+## 6. Receive the goods
+
+First read the order to get its line record id, which the receipt refers to:
+
+```bash
+curl -s "$BASE/pos/$PO" -H "Authorization: Bearer $TOKEN" | jq -r '.lines[0].recordId'
+```
+
+```bash
+export LINE="rec_01JB..."
+```
+
+Create the receipt draft:
+
+```bash
+curl -s -X POST "$BASE/grns" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{
+    \"warehouse\": \"WH-MAIN\",
+    \"receipt_date\": \"2026-08-11\",
+    \"po_no\": \"$PO\",
+    \"lines\": [
+      {
+        \"po_line\": \"$LINE\",
+        \"received_qty\": 10,
+        \"rejected_qty\": 1,
+        \"reject_reason\": \"One bag torn in transit.\",
+        \"batch_code\": \"B-0811-01\",
+        \"mfg_date\": \"2026-08-05\",
+        \"expiry_date\": \"2027-02-05\",
+        \"supplier_lot\": \"ACM-LOT-99231\"
+      }
+    ]
+  }"
+```
+
+`201` at `"grn_status": "draft"`, with a number — `GRN-000045`.
+
+If the item is batch-tracked in Inventory and you omit `batch_code`, this is refused **here**, at draft time, rather than at post time — so the operator finds out while they are still holding the delivery note.
+
+```bash
+export GRN="GRN-000045"
+```
+
+## 7. Post the receipt
+
+This is the call that moves stock.
+
+```bash
+curl -s -X POST "$BASE/grns/$GRN/post" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "grn": { "grn_no": "GRN-000045", "grn_status": "posted", "…": "…" },
+  "inv_receipt_doc_no": "RCV-00218",
+  "movements_posted": 1,
+  "replayed": false,
+  "po_status": "partially_received",
+  "open_supply_unchanged": [],
+  "tolerance_warnings": [],
+  "override_reason": null
+}
+```
+
+That single response tells you five things without a second read:
+
+- The receipt is `posted`.
+- **Inventory** wrote the stock and gave it receipt number `RCV-00218`.
+- One movement was written.
+- The order moved to `partially_received` — nine bags accepted against ten ordered.
+- Nothing was unexpectedly left out of the open-supply adjustment.
+
+Nine, not ten, because one bag was rejected. `accepted_qty` is `received_qty − rejected_qty`, and only the accepted quantity posts stock.
+
+### Confirm the stock landed
+
+In Inventory:
+
+```bash
+curl -s "https://api.erplite.app/bff-service/inventory/balances?item=SKU-SUGAR-50KG&warehouse=WH-MAIN" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+`450` kg — nine bags of 50.
+
+## 8. Finish the order
+
+The order still shows one bag pending. Either the supplier sends it, or you close the line out.
+
+If they will not deliver the rest:
+
+```bash
+curl -s -X POST "$BASE/pos/$PO/lines/$LINE/short-close" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{ "reason": "Supplier confirmed the damaged bag will not be replaced." }'
+```
+
+That needs a supervisor — it withdraws a quantity from a supplier who has already been sent the order.
+
+The response is the **whole order**, so you can see whether it closed as a result.
+
+Once every line is at zero pending, file it:
+
+```bash
+curl -s -X POST "$BASE/pos/$PO/close" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{ "reason": "All lines settled; filing for August." }'
+```
+
+## If you need to undo a receipt
+
+A posted receipt is never edited. You reverse it, which writes a **new compensating document** pointing at the first:
+
+```bash
+curl -s -X POST "$BASE/grns/$GRN/reverse" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{ "reason": "Goods physically delivered to WH-COLD, not WH-MAIN." }'
+```
+
+Both documents remain as the history. The stock comes back out, the open-supply position is restored, and the order's status rolls back.
+
+## What to watch for
+
+**The order number is allocated at draft create.** If you retry a create you did not see the response to, you get a second order. Send an `external_key` so you can find the first one.
+
+**Read `po_status` after submit.** Do not assume it is `pending_approval`.
+
+**Open supply is in base units.** Comparing `pending_base_qty` against an ordered quantity in bags will look wrong by a factor of the conversion.
+
+**Posting is idempotent across the Inventory seam.** A retried post carries the same key, so Inventory returns `replayed: true` rather than receiving the goods twice.

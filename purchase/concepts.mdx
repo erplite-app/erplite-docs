@@ -1,0 +1,116 @@
+---
+title: "Concepts"
+description: "The order lifecycle, open supply, the Inventory seam, governance resolution, units, and idempotency."
+---
+
+Read this page once. Every endpoint page after it assumes these ideas.
+
+## The purchase order lifecycle
+
+An order has seven states, and it only moves through the action routes.
+
+```
+draft ──submit──▶ pending_approval ──approve──▶ approved
+  │                      │                        │
+  │                      │                        ├──(receipt)──▶ partially_received ──▶ received ──close──▶ closed
+  │                      │                        │
+  └──cancel──────────────┴────────────────────────┴──cancel──▶ cancelled
+```
+
+| Status | What it means |
+|--------|---------------|
+| `draft` | Being written. No commitment exists. Lines can be added, edited and removed. |
+| `pending_approval` | Submitted and waiting for a supervisor. Still not a commitment. |
+| `approved` | Authorised and sent to the vendor. **This is where a commitment begins.** |
+| `partially_received` | Some, but not all, of the ordered quantity has arrived. |
+| `received` | Every line is satisfied. Nothing is pending. |
+| `closed` | Finished and filed. It no longer appears as outstanding. |
+| `cancelled` | Withdrawn. Anything already received stays received. |
+
+Two things follow from this that catch people out.
+
+**A submit can land on `approved` directly.** If the order total is below the account's approval threshold, submit approves it in one step. The threshold defaults to `0`, so nothing auto-approves until an administrator raises it. Read `po_status` on the response to find out which happened — do not assume submit always means `pending_approval`.
+
+**An amendment can send an approved order backwards.** If you amend an order so that it adds a line or crosses the threshold it was approved against, it returns to `pending_approval` and needs a supervisor again. The `purchase.po.amended` event carries `awaiting_reapproval` so a subscriber does not have to work this out.
+
+## Open supply
+
+Open supply is the module's answer to "how much of this item is already on order for this warehouse". It is stored, not computed on demand, and it is the number the replenishment engine trusts.
+
+- A **position** is keyed on `(item, warehouse)`.
+- It grows when an order is approved, and shrinks when a receipt is posted against it, when a line is short-closed, or when an order is cancelled.
+- A `draft` or first-time `pending_approval` order contributes **nothing**. Neither is a commitment — nobody has told the vendor yet.
+
+**Quantities are in base units.** The field names say so: `pending_base_qty`, `open_base_qty`. An order may be placed in bags, drums or cases, but the position is held in the item's base unit so it is directly comparable with Inventory's `available`. See [Units of measure](#units-of-measure) below.
+
+The read endpoint takes `item` and `warehouse` as **filters**, not as a required grain. Ask for everything, one item, one warehouse, or both. A question matching more positions than one read will answer is refused with a `422` telling you how to narrow it — rather than answered with a first page that reads exactly like a complete answer.
+
+## The Inventory seam
+
+Purchase does not write stock. When you post a goods receipt:
+
+1. Purchase validates the receipt against the order and the tolerance policy.
+2. Purchase calls **Inventory's Receive operation** with an idempotency key of `grn-post-<grn_no>`.
+3. Inventory writes the movements and returns its own receipt number.
+4. Purchase records that number on the receipt, reduces the open-supply position, and rolls up the order's quantities.
+
+Two consequences are worth stating.
+
+**There are two receipt numbers for one delivery, on purpose.** `grn_no` is Purchase's number, which is what an operator quotes. `inv_receipt_doc_no` is Inventory's number for the same physical event. Both are on the receipt and both are in the export. An accountant tracing a query between the modules needs the pair; treating either one as "the receipt number" is how somebody concludes the two systems disagree.
+
+**The posting is idempotent across the seam.** The key is derived from the receipt number, so a retried post does not receive the goods twice. When Inventory recognises a key it has already committed, the response carries `replayed: true` and no new movements.
+
+## Governance policies
+
+Three keys govern what may happen, and they resolve by scope.
+
+| Key | Value shape | Scopes it may be set at |
+|-----|-------------|--------------------------|
+| `approval_threshold` | `{ "amount": 250000 }` | `account` only |
+| `self_approval` | `{ "allowed": false }` | `account` only |
+| `over_receipt_tolerance` | `{ "mode": "allow_with_warning" }` or `{ "mode": "block_beyond_pct", "pct": 10 }` | `account`, `material_category`, `vendor` |
+
+Approval threshold and self-approval are account-scoped deliberately. Spend authority and separation of duties are properties of the account; a per-vendor approval threshold would mean the same order needs an approver or does not depending on who you buy from.
+
+**Resolution is most-specific-wins.** A vendor-scoped tolerance beats a material-category one, which beats the account one.
+
+**Values are checked strictly, and unknown keys are refused.** `{"allowed": "false"}` is rejected rather than coerced — because `Boolean("false")` is `true`, and a lenient parser would read that as permission to self-approve while the screen still showed "false". Likewise `{"mode": "allow_with_warning", "pct": 10}` is refused rather than stored with the `pct` ignored, because storing it would leave an administrator believing a 10% cap was in force when nothing enforced one.
+
+**Deleting a policy row degrades to a default, it does not brick the module.** Each of the three keys has a hard-coded fallback equal to its seeded value. The seeded rows exist so an administrator can see and edit the values in a settings screen, not because the module cannot run without them.
+
+## Separation of duties
+
+Two rules protect an order from one person pushing it through alone.
+
+- **The approver may not be the creator.** A supervisor holds `po.approve` for every order in the account and can still be refused this one. The refusal is a `403` naming `requires: "approver ≠ creator"`, which is distinguishable from the `403` for "you are not a supervisor".
+- **The approver may not be the last amender.** `last_amended_by` is stamped by the amend route and compared at approve. No request may set it — every route refuses a body carrying it.
+
+Both rules can be relaxed by setting `self_approval` to `{"allowed": true}`, which is the right answer for a one-person account and a deliberate decision for any other.
+
+<Note>
+Granting module access to a **platform role** rather than to named users makes the population uncountable to the module. Purchase cannot read who belongs to a platform role, so on an account bound that way its self-approval detector cannot tell one person from fifty. The dashboard's **Settings → Module access** screen shows a headcount beside each role for exactly this reason.
+</Note>
+
+## Units of measure
+
+An order line is placed in a **purchase unit** — bags, drums, cases. Stock is held in the item's **base unit**. The module snapshots the conversion factor onto the line when the order is raised, so a conversion changed later never silently restates a past order.
+
+- `ordered_qty` and `purchase_uom` are what you ordered.
+- `base_qty` and `conversion_factor` are derived and cannot be set by a caller.
+- Open supply is in base units.
+
+If the conversion for an item and its purchase unit does not exist in Inventory, raising the line is refused. That refusal is deliberate — the alternative is an order whose quantity nobody can compare with stock.
+
+## Idempotency and external keys
+
+Purchase does **not** take an `idempotency_key` on its writes, and this is a real difference from the Inventory module. Purchase documents are addressed by a number the module allocates (`PO-000123`, `GRN-000045`), and that number is allocated when the draft is created. So the retry-safe pattern is different:
+
+- **Creating a draft** allocates a number. Retrying a create that you did not see the response to will allocate a second number. Use `external_key` to carry your own identifier onto the record so you can find it again.
+- **Every action route is safe to retry** in the sense that it is a state transition. Approving an already-approved order is a `409 state_conflict`, not a second approval.
+- **Posting a receipt is idempotent across the Inventory seam**, keyed on the receipt number, so a retried post never receives the goods twice.
+
+## The engine store
+
+Open supply, the recommendation queue, staged imports and the event outbox live in the module's own store, not in platform tables. That is a deliberate choice: platform tables index asynchronously, so a read-then-write against one would race the indexer. Uniqueness that has to hold — one open recommendation per grain, one posted receipt per key — is enforced by a real index rather than by a check that can lose a race.
+
+When that store is starting up, endpoints that depend on it answer `503 engine_unavailable` rather than degrading. "Nothing is on order" is not something the module will say when it does not know.

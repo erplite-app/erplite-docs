@@ -1,0 +1,206 @@
+---
+title: "Imports and exports"
+sidebarTitle: "Imports and exports"
+description: "Export orders and receipts for accounting, export master data, and load vendors and prices from a spreadsheet."
+---
+
+Two different jobs live on this page.
+
+**Exports** hand documents to accounting. ERPLite has no invoice and no ledger, and it must never need one — so these files *are* the interface to accounting.
+
+**Imports** load master data from a spreadsheet, with a dry run before anything is written.
+
+## Document exports
+
+### `GET /exports/po` and `GET /exports/grn` — `export`
+
+| Query | Effect |
+|-------|--------|
+| `po_no` / `grn_no` | One document. When set, the date range is ignored. |
+| `from` | Inclusive lower bound on the document's own date (`YYYY-MM-DD`) |
+| `to` | Inclusive upper bound |
+| `format` | `csv` for a downloadable file; anything else returns JSON |
+
+Both bounds may be absent, which exports everything. That is deliberate — "give accounting the lot" is a real request, and refusing it would send somebody to the API with a script.
+
+**JSON** (the default) returns the same rows as the CSV, not a richer shape:
+
+```json
+{
+  "entity": "po",
+  "headers": ["po_no", "po_status", "vendor_code", "…"],
+  "rows": [ { "po_no": "PO-000512", "po_status": "approved", "…": "…" } ],
+  "csv": "po_no,po_status,…\nPO-000512,approved,…\n",
+  "documents": 1
+}
+```
+
+**`?format=csv`** returns `text/csv` with a `Content-Disposition` that names the file after what it holds and the range — `purchase-orders-2026-07-01-to-2026-07-31.csv`, not `export.csv`.
+
+`documents` counts **documents**, not rows. A three-line order is one document and three rows.
+
+### One row per line
+
+Both exports are flattened: the header fields repeat on every line of the document. That is what an accounting system expects.
+
+### Purchase order columns
+
+```
+po_no, po_status, vendor_code, warehouse, currency,
+order_date, expected_date, payment_terms,
+approval_in_force, approved_by, created_by, submitted_by, last_amended_by,
+cancel_reason, close_reason,
+item_code, purchase_uom, ordered_qty, received_qty, accepted_qty,
+rejected_qty, pending_qty, short_closed_qty, line_status,
+unit_price, line_total, tax_ref,
+external_key
+```
+
+`approval_in_force` and `approved_by` are **separate columns** because they answer separate questions. An amended order is not approved right now and still records who approved the original. One column would make the second look like the first.
+
+### Goods receipt columns
+
+```
+grn_no, grn_status, vendor_code, warehouse, receipt_date,
+po_no, inv_receipt_doc_no, reversal_of, adhoc_reason, override_reason,
+item_code, uom, ordered_ref_qty, received_qty, accepted_qty,
+rejected_qty, reject_reason,
+batch_code, mfg_date, expiry_date, supplier_lot,
+unit_cost, line_value,
+external_key
+```
+
+**Both receipt numbers are here**, and that is the point. `grn_no` is Purchase's number and `inv_receipt_doc_no` is Inventory's number for the same physical delivery. An accountant tracing a query between the modules needs the pair; exporting one and calling it "the receipt number" is how somebody concludes the two systems disagree.
+
+### Documents with no date
+
+A document with **no date** is **excluded** from a bounded range and **included** when no range was asked for.
+
+That asymmetry is deliberate. A draft with no order date cannot honestly be said to fall in March, and treating a missing date as "matches everything" would put the same draft in every month's export.
+
+## Master exports
+
+### `GET /exports/{entity}` — `export`
+
+`entity` is `vendors` or `catalog`. An unknown entity is a `404` naming the ones that exist.
+
+```json
+{
+  "entity": "vendors",
+  "headers": ["vendor_code", "vendor_name", "…", "status"],
+  "rows": [ { "vendor_code": "ACME", "…": "…" } ],
+  "csv": "vendor_code,vendor_name,…\nACME,…\n",
+  "records": 42
+}
+```
+
+`records` counts records; both master exports are one row per record.
+
+**The file round-trips.** Its columns are exactly the ones the importer accepts, plus `status` for the reader. Export, change three cells, re-import — the untouched rows come back as `skipped`.
+
+## Imports
+
+Two phases: a **dry run** that validates and stages, then a **commit** that applies. Both need `import.commit` (supervisor).
+
+### Why the dry run needs a supervisor too
+
+It changes nothing, and it still needs the higher floor. The report names every row that would be written and every rule that rejected one — it is a readout of the account's validation rules against somebody else's data, and it is the first half of an action only a supervisor may finish.
+
+A lower floor here would also let an operator stage an import and hand the id to somebody who could commit it without ever seeing the file.
+
+### `POST /imports` — `import.commit`
+
+```json
+{
+  "entity": "vendors",
+  "csv": "vendor_code,vendor_name,email\nACME,Acme Ingredients Pvt Ltd,orders@acme.example\n"
+}
+```
+
+Send the file's contents as a string. The server parses it.
+
+`200` with the staged report:
+
+```json
+{
+  "import_id": "imp_01JH...",
+  "entity": "vendors",
+  "status": "staged",
+  "total": 3,
+  "ok_count": 2,
+  "error_count": 1,
+  "rows": [
+    { "row_no": 1, "external_key": "ACME", "verdict": "ok" },
+    { "row_no": 2, "external_key": "BHARAT-AGRO", "verdict": "ok" },
+    { "row_no": 3, "external_key": "NEWCO", "verdict": "error", "error": "vendor_name is required." }
+  ]
+}
+```
+
+**Nothing is written.** The rows are validated with the same rules the API applies, and staged for a commit.
+
+A **shape** error — a column-count mismatch — fails the whole file as a `422` rather than as per-row results. After a column-count mismatch, no row is the row it appears to be.
+
+### `POST /imports/{id}/commit` — `import.commit`
+
+No body.
+
+```json
+{
+  "import_id": "imp_01JH...",
+  "entity": "vendors",
+  "committed": 1,
+  "updated": 1,
+  "skipped": 0,
+  "errors": 1,
+  "already_committed": false
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `committed` | Rows that created something new |
+| `updated` | Rows that changed something that already existed |
+| `skipped` | Rows already present **and unchanged** — the round-trip number |
+| `errors` | Rows the dry run rejected. A commit never applies one. |
+| `already_committed` | `true` when this import was already committed; the second call did nothing |
+
+Committing twice is safe.
+
+### `GET /imports/{id}` — `import.commit`
+
+Re-read a report, for a caller that lost the response to a dropped connection.
+
+### Columns
+
+**`vendors`**
+
+```
+vendor_code, vendor_name, tax_identity, contact_name, email, phone,
+address, comms_preference, email_consent, payment_terms,
+default_lead_time_days, external_key
+```
+
+Required: `vendor_code`, `vendor_name`.
+
+**`catalog`**
+
+```
+vendor_code, item_code, vendor_item_code, price, currency,
+lead_time_days, moq, purchase_uom, hsn_tax_ref, external_key
+```
+
+Required: `vendor_code`, `item_code`, `purchase_uom`.
+
+`purchase_uom` is required alongside the pair because a catalog line with no unit cannot price anything, and defaulting it would guess at a vendor's terms.
+
+### What an import will not do
+
+- It will not **delete** anything. A vendor absent from the file is left alone.
+- It will not **reuse** a vendor code. Codes are permanent.
+- It will not **change status**. Deactivation is a supervisor action on its own route, not a column in a spreadsheet.
+- It validates every `item_code` against Inventory, exactly as the API does.
+
+<Note>
+Permission is checked on the **route**, not on the screen. A caller with a token and no browser meets the same rule as somebody using the dashboard.
+</Note>

@@ -1,0 +1,244 @@
+---
+title: "Replenishment"
+sidebarTitle: "Replenishment"
+description: "Min/max reorder policies, the recommendation queue, converting advice into draft orders, and external ingestion."
+---
+
+The replenishment engine watches stock and advises what to buy. It compares each item and warehouse against its reorder policy, counting what is already on order, and raises a **recommendation** when the position falls short.
+
+A recommendation is advice. It never places an order by itself — somebody converts it into a draft, and the approval threshold still applies to that draft.
+
+## Reorder policies
+
+Every route on this resource, **including the reads**, needs `config.manage` (admin). Reorder parameters are commercial configuration — what you buy and when — so an operator seeing them is not assumed.
+
+A policy is addressed by its **record id**. Its business identity is the scope grain, which does not belong in a URL path.
+
+### The policy object
+
+```json
+{
+  "recordId": "rec_01JE...",
+  "scope_type": "sku_warehouse",
+  "scope_material_category": null,
+  "scope_item_code": "SKU-SUGAR-50KG",
+  "scope_warehouse": "WH-MAIN",
+  "policy_name": "min_max",
+  "params": { "min": 200, "max": 1000, "moq": 50 },
+  "fulfilment_path": "purchase",
+  "status": "active",
+  "external_key": null
+}
+```
+
+| Field | Values |
+|-------|--------|
+| `scope_type` | `sku_warehouse` or `material_category` |
+| `policy_name` | `min_max` or `none` |
+| `fulfilment_path` | `purchase` |
+| `params` | The keys the named policy uses, and no others |
+
+**`params` are in base units.** `min`, `max` and `moq` are compared against Inventory's `available` plus open supply, both of which are base units.
+
+**`policy_name: "none"` is a real answer.** It says "do not replenish this grain automatically" and takes no params. That is different from having no policy at all.
+
+**Unknown params are refused, not dropped.** Sending a key the named policy does not use is a `422`. Storing it would leave an administrator believing a parameter was in force when nothing read it.
+
+Two policy names and two fulfilment paths are **reserved and not yet implemented**: `order_linked`, `coverage_target`, `production` and `transfer`. Sending one is refused with a message saying so, rather than being silently accepted.
+
+### `POST /reorder-policies` — `config.manage`
+
+```json
+{
+  "scope_type": "sku_warehouse",
+  "scope_item_code": "SKU-SUGAR-50KG",
+  "scope_warehouse": "WH-MAIN",
+  "policy_name": "min_max",
+  "params": { "min": 200, "max": 1000, "moq": 50 },
+  "fulfilment_path": "purchase",
+  "reason": "Q3 demand plan; sugar moved to weekly replenishment."
+}
+```
+
+`reason` is **required** on every write, including deactivate and reactivate. It goes onto the audit record, not onto the policy — there is no reason column.
+
+`201` with the policy.
+
+### `PUT /reorder-policies/{id}` — `config.manage`
+
+Editable: `policy_name`, `params`, `fulfilment_path`, `external_key`. Plus the required `reason`.
+
+The four **scope** fields are the row's identity and are immutable. Moving a policy to a different grain is creating a policy at that grain — a different row with its own audit history. `status` moves only through the lifecycle routes. All five are refused with a message naming the right path.
+
+### `POST /reorder-policies/{id}/deactivate` and `/reactivate` — `config.manage`
+
+```json
+{ "reason": "Line discontinued." }
+```
+
+### `GET /reorder-policies` — `config.manage`
+
+Optional `?scope_type=sku_warehouse`.
+
+```json
+{ "reorder_policies": [ { "recordId": "...", "…": "…" } ] }
+```
+
+### `GET /reorder-policies/{id}` — `config.manage`
+
+The policy directly, or `404`.
+
+## The recommendation queue
+
+### The recommendation object
+
+```json
+{
+  "id": "66ae1f3c9b2d4e0012a7f501",
+  "account_id": "unyuqr",
+  "item": "SKU-SUGAR-50KG",
+  "warehouse": "WH-MAIN",
+  "status": "open",
+  "shortfall_qty": 700,
+  "suggested_source": ["ACME", "BHARAT-AGRO"],
+  "blocker": null,
+  "fulfilment_path": "purchase",
+  "producer": "purchase.reorder-sweep",
+  "converted_po_ref": null,
+  "dismissed_by": null,
+  "dismiss_reason": null,
+  "created_at": "2026-08-02T03:00:14.882Z",
+  "updated_at": "2026-08-02T03:00:14.882Z",
+  "resolved_at": null,
+  "explanation_snapshot": {
+    "on_hand": 120,
+    "available": 120,
+    "commitments_tracked": false,
+    "open_supply": 180,
+    "position": 300,
+    "policy": { "min": 200, "max": 1000, "moq": 50 },
+    "policy_source": { "recordId": "rec_01JE...", "scope_type": "sku_warehouse", "scope": "SKU-SUGAR-50KG@WH-MAIN" },
+    "moq_overshoot": false,
+    "taken_at": "2026-08-02T03:00:14.201Z"
+  }
+}
+```
+
+The `id` is the engine's own identifier, opaque to callers. Unlike every other entity in the module there is no platform record behind a recommendation, so the engine id **is** the public id. Do not parse it, and do not address a recommendation by its `(item, warehouse)` grain — that identifies only the *open* one, and it silently retargets if the open row is replaced between your read and your action.
+
+`status` is `open`, `converted`, `dismissed` or `resolved`.
+
+`blocker` is `no_eligible_source` when a need exists but no active catalog line can supply it. `suggested_source` is empty in that case. The recommendation is still raised — a shortfall you cannot source is exactly the thing somebody needs to see.
+
+### The explanation snapshot is the audit trail
+
+It records the figures the advice was computed from, at the moment it was computed. This matters because every input can change afterwards: stock moves, orders arrive, policies get edited. Without the snapshot, a recommendation from last Tuesday is unauditable.
+
+| Field | Meaning |
+|-------|---------|
+| `on_hand` / `available` | Inventory's figures, base units, at generation time |
+| `commitments_tracked` | Whether `available` had commitments subtracted. **False in every account today**, so `available` equals `on_hand`. It is pinned here so that a snapshot written before reservation ships still says which meaning it used. |
+| `open_supply` | The position used, base units |
+| `position` | `available + open_supply` — the number compared against `min` |
+| `policy` | The resolved parameters as they were in force |
+| `policy_source` | Which row produced them, and at which scope. `null` when defaulted. |
+| `moq_overshoot` | True when `moq` forced the order above `max` |
+
+### `GET /recommendations` — `view`
+
+Returns the **open** queue. Optional `item` and `warehouse` narrow the display.
+
+```json
+{ "recommendations": [ { "id": "66ae...", "…": "…" } ] }
+```
+
+Seeing what the engine advises needs only `view`. Acting on it is a different permission.
+
+### `POST /recommendations/{id}/dismiss` — `recommendation.review`
+
+```json
+{ "reason": "Covered by the standing contract with Bharat Agro." }
+```
+
+A `POST` rather than a `DELETE`, because nothing is deleted. The row survives carrying who decided and why, which is the entire point of the transition.
+
+`200` with the recommendation at `"status": "dismissed"`.
+
+### `POST /recommendations/convert` — `recommendation.review`
+
+Turn one or more recommendations into draft purchase orders.
+
+```json
+{
+  "recommendation_ids": ["66ae1f3c9b2d4e0012a7f501", "66ae1f3c9b2d4e0012a7f502"],
+  "vendor_code": "ACME",
+  "expected_date": "2026-08-20"
+}
+```
+
+`201`:
+
+```json
+{
+  "purchase_orders": [
+    { "po_no": "PO-000513", "warehouse": "WH-MAIN", "recommendation_ids": ["66ae1f3c9b2d4e0012a7f501"] },
+    { "po_no": "PO-000514", "warehouse": "WH-COLD", "recommendation_ids": ["66ae1f3c9b2d4e0012a7f502"] }
+  ]
+}
+```
+
+**Recommendations are grouped by warehouse**, one order per warehouse, because a purchase order delivers to a single place.
+
+The orders it raises are **drafts**. The approval threshold still applies, which is what makes `recommendation.review` a safe permission to hold at the operator floor: a person who may decide "no" may also decide "yes", and neither commits money on its own.
+
+Conversion runs the **same validation** a hand-raised order does. It is the same code path, so an order raised from advice cannot be less valid than one typed in.
+
+### `POST /recommendations/ingest` — `recommendation.ingest`
+
+An external planner submits a recommendation directly.
+
+```json
+{
+  "item": "SKU-SUGAR-50KG",
+  "warehouse": "WH-MAIN",
+  "quantity": 700,
+  "suggested_source": ["ACME"],
+  "explanation": "Q3 promotion uplift, demand plan v4.",
+  "source": "demand-planner",
+  "opaque_external": "dp-run-2026-08-02"
+}
+```
+
+`201` when a recommendation was created, `200` when the grain already had one:
+
+```json
+{
+  "item": "SKU-SUGAR-50KG",
+  "warehouse": "WH-MAIN",
+  "quantity": 700,
+  "producer": "demand-planner",
+  "created": true
+}
+```
+
+**This capability is off the role ladder entirely.** No human role grants it, not even `admin`. It belongs to a named integration principal, because the route puts a buying signal in front of a buyer without anybody having decided it.
+
+<Note>
+This endpoint is deliberately thin. Its designed first customer was the Production module, and that is no longer the plan — a production shortfall is a demand fact rather than a recommendation. Treat it as a working but minimal surface.
+</Note>
+
+## One open recommendation per grain
+
+`(item, warehouse)` may hold at most one open recommendation. This is enforced by a real unique index in the module's store, not by a check that can lose a race.
+
+When a second producer finds a need on a grain that another producer already owns, it **stands down** rather than raising a duplicate or failing. The sweep counts this as `deferred` and reports it separately — it is the one outcome that means two systems disagree about a shelf and a person should look. Folded into "covered" it would be invisible; folded into "failed" it would read as a fault, which it is not.
+
+## When recommendations are generated
+
+Three ways:
+
+1. **A scheduled sweep**, which walks every grain with a policy.
+2. **An event from Inventory.** Purchase subscribes to Inventory's stock changes, so a large issue can trigger re-evaluation of the grain it touched rather than waiting for the next sweep.
+3. **`POST /admin/sweep-reorder`**, which runs the same sweep on demand. See [Admin](/purchase/api/admin).
+
+A recommendation retires itself when coverage recovers — its status becomes `resolved` and `purchase.recommendation.resolved` is emitted.

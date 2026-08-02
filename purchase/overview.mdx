@@ -1,0 +1,70 @@
+---
+title: "Purchase Module for Developers"
+sidebarTitle: "Overview"
+description: "Buy goods and receive them: vendors, purchase orders, goods receipts, replenishment advice, and the seam into Inventory."
+---
+
+The Purchase module buys things. It holds your vendors and their price lists, raises and approves purchase orders, receives the goods that arrive against them, and advises you when stock runs low.
+
+This section is a developer reference. It documents the concepts, the permission model, and every endpoint. The rest of the ERPLite docs are written for business users and administrators; these pages assume you are writing code against the API.
+
+<Note>
+The module runs as a pilot behind an account allowlist. Your account must be enabled for `/bff-service/purchase/*` before any of these endpoints will answer. See [Authentication and roles](/purchase/auth-and-roles).
+</Note>
+
+## The mental model
+
+Three ideas explain almost everything about how the module behaves.
+
+**A purchase order is a promise, and its status is the whole story.** An order moves along a state machine: `draft → pending_approval → approved → partially_received → received → closed`, with `cancelled` reachable from several of those. Nothing skips a state, and no route lets you write a status directly. You call an action — submit, approve, amend, cancel, close — and the module decides what the new status is. The response always carries the order in its new state, so you never need a second read to find out what happened.
+
+**Purchase never writes stock.** Receiving goods puts them on a shelf, but Purchase does not put them there. It calls Inventory's Receive operation across a seam, and Inventory writes the movements. Purchase holds the receipt document and the paperwork around it; Inventory holds the ledger. The two are deliberately separate systems that agree by message rather than by shared tables.
+
+**Open supply is a position, not a query.** "What is already on order for this item at this warehouse" is an authoritative number the module maintains as orders are approved and receipts are posted. It is not derived by scanning purchase orders when you ask. This matters because that number is what the replenishment engine compares against stock — a lagging or partial answer would cause the module to order things twice.
+
+## What the module governs, and what it does not
+
+| Kind | Examples | Where it lives | How you change it |
+|------|----------|----------------|-------------------|
+| **Master data** | Vendors, the vendor-item catalog | Platform tables (`pur_vendor`, `pur_vendor_item`) | This module's endpoints, or its import pipeline |
+| **Configuration** | Governance policies, reorder policies | Platform tables (`pur_policy`, `pur_reorder_policy`) | The policy endpoints — admin only |
+| **Documents** | Purchase orders, goods receipts | Platform tables, changed only through the module | The document endpoints and their action routes |
+| **The position** | Open supply, recommendations, the event outbox | The module's own store, not platform tables | Never directly — only as a side effect of an action |
+| **Stock** | Movements and balances | **Inventory**, not here | Post a receipt; Inventory writes the movements |
+
+## What you can do with the API
+
+<CardGroup cols={2}>
+  <Card title="Keep vendors and prices" icon="address-book" href="/purchase/api/masters">
+    Vendors, the vendor-item catalog, and the deactivation rules that protect live commitments.
+  </Card>
+  <Card title="Raise purchase orders" icon="file-signature" href="/purchase/api/purchase-orders">
+    Draft, submit, approve, amend, cancel, short-close and close.
+  </Card>
+  <Card title="Receive goods" icon="truck-ramp-box" href="/purchase/api/receipts">
+    Goods receipts against an order or ad-hoc, batch capture, over-receipt tolerance, and reversal.
+  </Card>
+  <Card title="Replenish automatically" icon="arrows-rotate" href="/purchase/api/replenishment">
+    Min/max policies, the recommendation queue, and turning advice into draft orders.
+  </Card>
+  <Card title="Configure governance" icon="scale-balanced" href="/purchase/api/policies">
+    Approval thresholds, self-approval, and over-receipt tolerance.
+  </Card>
+  <Card title="Subscribe to events" icon="bell" href="/purchase/api/events">
+    A signed webhook for every approval, amendment, cancellation, receipt and policy change.
+  </Card>
+</CardGroup>
+
+## Where to start
+
+<Steps>
+  <Step title="Read the concepts">
+    [Concepts](/purchase/concepts) explains the order lifecycle, open supply, the receipt seam, governance resolution, and units of measure. The API will make sense once these do.
+  </Step>
+  <Step title="Get authenticated and allowlisted">
+    [Authentication and roles](/purchase/auth-and-roles) covers the bearer token, the allowlist, and the capability each action needs. Call `GET /whoami` to see what your credential may do.
+  </Step>
+  <Step title="Buy something end to end">
+    Follow [Raise an order and receive it](/purchase/guides/raise-an-order-and-receive-it) to go from a vendor to stock on a shelf.
+  </Step>
+</Steps>

@@ -1,0 +1,162 @@
+---
+title: "Vendors and catalog"
+sidebarTitle: "Vendors and catalog"
+description: "Vendor records, the vendor-item price list, and the rules that protect a live commitment."
+---
+
+Two master resources. A **vendor** is who you buy from. A **catalog line** is the price and terms for one item from one vendor.
+
+Both follow the same shape: create, edit, deactivate, reactivate, and two reads. Neither has a `DELETE` route. A vendor is never hard-deleted and its code is never reused.
+
+## Vendors
+
+### `POST /vendors` — `vendor.maintain`
+
+```json
+{
+  "vendor_code": "ACME",
+  "vendor_name": "Acme Ingredients Pvt Ltd",
+  "tax_identity": "29AABCA1234F1Z5",
+  "contact_name": "Ravi Kumar",
+  "email": "orders@acme.example",
+  "phone": "+91 80 4123 4567",
+  "address": "12 Industrial Layout, Bengaluru 560058",
+  "comms_preference": "email",
+  "email_consent": true,
+  "payment_terms": "NET30",
+  "default_lead_time_days": 7,
+  "external_key": "erp-legacy-4412"
+}
+```
+
+`201` with the vendor:
+
+```json
+{
+  "recordId": "rec_01J8...",
+  "vendor_code": "ACME",
+  "vendor_name": "Acme Ingredients Pvt Ltd",
+  "tax_identity": "29AABCA1234F1Z5",
+  "contact_name": "Ravi Kumar",
+  "email": "orders@acme.example",
+  "phone": "+91 80 4123 4567",
+  "address": "12 Industrial Layout, Bengaluru 560058",
+  "comms_preference": "email",
+  "email_consent": true,
+  "payment_terms": "NET30",
+  "default_lead_time_days": 7,
+  "status": "active",
+  "external_key": "erp-legacy-4412"
+}
+```
+
+`vendor_code` is the identity. It is required, unique, and never reused.
+
+`address` is not decoration: it is printed on the purchase order PDF sent to the supplier. `comms_preference` and `email_consent` decide whether that PDF is emailed at all.
+
+### `PUT /vendors/{code}` — `vendor.maintain`
+
+Every field from create except three, which are refused with a message naming the right path:
+
+- `vendor_code` — immutable. It is the identity.
+- `status` — moves only through the lifecycle routes, which need the higher `master.deactivate` floor. Letting an operator flip status through a field edit would route around that floor.
+
+### `POST /vendors/{code}/deactivate` — `master.deactivate`
+
+```json
+{ "override_reason": "Supplier in administration; commitments being novated." }
+```
+
+**A vendor holding a live open-supply commitment cannot be deactivated** without an override reason. The guard reads the authoritative open-supply position, not a list of purchase orders — so it cannot be fooled by an index that has not caught up.
+
+Without a live commitment the body may be omitted. With one, an omitted `override_reason` is a `422`; a supplied one is recorded on the audit trail as a waiver.
+
+`200` with the vendor at `"status": "inactive"`.
+
+### `POST /vendors/{code}/reactivate` — `master.deactivate`
+
+No body. `200` with the vendor at `"status": "active"`.
+
+### `GET /vendors` — `view`
+
+```json
+{ "vendors": [ { "recordId": "...", "vendor_code": "ACME", "…": "…" } ] }
+```
+
+### `GET /vendors/{code}` — `view`
+
+The vendor object directly, or `404`.
+
+## The vendor-item catalog
+
+A catalog line is the price and terms for one item from one vendor. Its business identity is the `(vendor_code, item_code)` pair, so it is **addressed by record id** in the URL rather than by a composite code.
+
+### `POST /catalog` — `catalog.maintain`
+
+```json
+{
+  "vendor_code": "ACME",
+  "item_code": "SKU-SUGAR-50KG",
+  "vendor_item_code": "ACM-SUG-50",
+  "price": 2450.00,
+  "currency": "INR",
+  "lead_time_days": 5,
+  "moq": 10,
+  "purchase_uom": "BAG50",
+  "hsn_tax_ref": "1701",
+  "external_key": "pl-2026-q3-0042"
+}
+```
+
+`201` with the line:
+
+```json
+{
+  "recordId": "rec_01J9...",
+  "vendor_code": "ACME",
+  "item_code": "SKU-SUGAR-50KG",
+  "vendor_item_code": "ACM-SUG-50",
+  "price": 2450,
+  "currency": "INR",
+  "lead_time_days": 5,
+  "moq": 10,
+  "purchase_uom": "BAG50",
+  "hsn_tax_ref": "1701",
+  "status": "active",
+  "external_key": "pl-2026-q3-0042"
+}
+```
+
+**Every write validates the item against Inventory.** `item_code` is looked up by business code across the module seam. An unknown or inactive item is a `422` — it is not stored and checked later.
+
+`purchase_uom` is the unit you buy in. It must have a conversion to the item's base unit in Inventory, or an order line using it cannot be raised.
+
+`moq` is the minimum order quantity. The replenishment engine respects it, and reports when it forced an order above the maximum.
+
+### `PUT /catalog/{id}` — `catalog.maintain`
+
+Editable: `vendor_item_code`, `price`, `currency`, `lead_time_days`, `moq`, `purchase_uom`, `hsn_tax_ref`, `external_key`.
+
+Refused with a message naming the right path: `vendor_code`, `item_code` (the pair is the identity — create a new line for a different pair) and `status`.
+
+### `POST /catalog/{id}/deactivate` and `/reactivate` — `master.deactivate`
+
+No body. `200` with the line in its new state.
+
+### `GET /catalog` — `view`
+
+Optional `?vendor=ACME` narrows to one vendor.
+
+```json
+{ "catalog": [ { "recordId": "...", "vendor_code": "ACME", "…": "…" } ] }
+```
+
+### `GET /catalog/{id}` — `view`
+
+The line directly, or `404`.
+
+## Why deactivation is a separate, higher-floor route
+
+An operator maintains vendors and prices all day. Taking a vendor out of service is a different act: it stops new orders being raised against them, and it is refused outright while they still owe you goods.
+
+Putting `status` on the edit route would mean an operator could do it with a field, bypassing the supervisor floor entirely. So the field is refused on edit and the lifecycle lives on its own routes. The refusal message names them, so nobody has to guess.

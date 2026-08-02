@@ -1,0 +1,273 @@
+---
+title: "Purchase orders"
+sidebarTitle: "Purchase orders"
+description: "Draft, submit, approve, amend, cancel, short-close and close — and what each transition does to the commitment."
+---
+
+A purchase order is addressed by its **number**, not its record id. The number is allocated when the draft is created, so a draft has a URL from the moment it exists.
+
+Every action returns the whole order in its new state. You never need a second read to find out what happened.
+
+## The order object
+
+```json
+{
+  "recordId": "rec_01JA...",
+  "po_no": "PO-000512",
+  "vendor_code": "ACME",
+  "warehouse": "WH-MAIN",
+  "order_date": "2026-08-02",
+  "expected_date": "2026-08-12",
+  "payment_terms": "NET30",
+  "currency": "INR",
+  "po_status": "approved",
+  "approval_threshold_snapshot": 250000,
+  "created_by": "user:u-8812",
+  "submitted_by": "user:u-8812",
+  "approval": {
+    "in_force": true,
+    "awaiting": false,
+    "awaiting_reapproval": false,
+    "last_approved_by": "user:u-3390",
+    "auto_approved": false
+  },
+  "last_amended_by": null,
+  "cancel_reason": null,
+  "close_reason": null,
+  "recommendation_refs": [],
+  "external_key": null,
+  "updated_on": "2026-08-02T09:14:22.481Z",
+  "total": 24500,
+  "lines": [
+    {
+      "recordId": "rec_01JB...",
+      "item_code": "SKU-SUGAR-50KG",
+      "ordered_qty": 10,
+      "purchase_uom": "BAG50",
+      "conversion_factor": 50,
+      "base_qty": 500,
+      "unit_price": 2450,
+      "line_total": 24500,
+      "tax_ref": "1701",
+      "received_qty": 0,
+      "accepted_qty": 0,
+      "rejected_qty": 0,
+      "pending_qty": 10,
+      "short_closed_qty": 0,
+      "line_status": "open"
+    }
+  ]
+}
+```
+
+### `approval` separates tense from history
+
+There is deliberately **no `approved_by` field** on an order. An amendment sends an approved order back to `pending_approval` without erasing the record that somebody approved the original — so a field called `approved_by` on an unapproved order would have a screen rendering "Pending approval / Approved by Bob". Instead there is one object where the tense is impossible to miss.
+
+| Field | Answers |
+|-------|---------|
+| `in_force` | Is an approval standing behind this order **right now**? |
+| `awaiting` | Is it waiting for an approval right now? |
+| `awaiting_reapproval` | Is it waiting for a **re**-approval — approved, then amended? |
+| `last_approved_by` | Who last approved it. History; survives amendment and cancellation. |
+| `auto_approved` | Was that approval the automatic below-threshold one? |
+
+**Read `in_force` before you render anything approving.** It is true only for `approved` and `partially_received`. An order at `received` or `closed` was approved and is now finished, so no live commitment stands behind it.
+
+`awaiting_reapproval` is not cosmetic: it is the difference between a live sent commitment that still counts toward open supply and a document that is not a commitment at all.
+
+An auto-approved order carries `last_approved_by: "system:auto_approve"` and `auto_approved: true`. Read the flag rather than matching on the string. An auto-approval **is** a previous approval — a below-threshold order is a real sent commitment, so an amendment that routes it back is a re-approval exactly as a human-approved one is.
+
+### `total` is derived from the lines
+
+It is never stored. The approval threshold is compared against it.
+
+## Create and edit a draft
+
+### `POST /pos` — `po.draft`
+
+```json
+{
+  "vendor_code": "ACME",
+  "warehouse": "WH-MAIN",
+  "order_date": "2026-08-02",
+  "expected_date": "2026-08-12",
+  "external_key": "req-4471",
+  "lines": [
+    {
+      "item_code": "SKU-SUGAR-50KG",
+      "ordered_qty": 10,
+      "purchase_uom": "BAG50",
+      "unit_price": 2450,
+      "tax_ref": "1701"
+    }
+  ]
+}
+```
+
+`201` with the order at `"po_status": "draft"` and a `po_no` already allocated.
+
+What the module does on create, and what it refuses:
+
+- **`currency` and `payment_terms` are snapshotted** from the account and the vendor. You cannot set them. A later change to either must not restate a past order.
+- **Each item is validated against Inventory** by business code. Unknown or inactive is a `422`.
+- **The UoM conversion is resolved and snapshotted** onto the line as `conversion_factor`, and `base_qty` is derived. A missing conversion is a `422` — the alternative is an order whose quantity nobody can compare with stock.
+- **The warehouse is validated** and must be active.
+- **Every derived field is refused**, not dropped. See [Conventions](/purchase/api/conventions#derived-fields-are-refused-not-ignored).
+
+### `PUT /pos/{no}` — `po.draft`
+
+Only while the order is a `draft`. Editing anything later is `409 state_conflict`, and the message names the route that does what you meant.
+
+`lines` **replaces** the line set. To keep a line, send it with its `record_id`. To add one, send it without. To remove one, leave it out.
+
+```json
+{
+  "expected_date": "2026-08-15",
+  "lines": [
+    { "record_id": "rec_01JB...", "item_code": "SKU-SUGAR-50KG", "ordered_qty": 12, "purchase_uom": "BAG50", "unit_price": 2450 },
+    { "item_code": "SKU-SALT-25KG", "ordered_qty": 4, "purchase_uom": "BAG25", "unit_price": 610 }
+  ]
+}
+```
+
+## Submit and approve
+
+### `POST /pos/{no}/submit` — `po.draft`
+
+**No request body.** Everything submit decides on is already on the draft, and a body would invite "submit with this threshold".
+
+`200` with the order in its new state, which is one of two things:
+
+- **`approved`** — the total was below the account's approval threshold. The commitment is now live: an open-supply position is written, and the vendor is notified.
+- **`pending_approval`** — the total was at or above the threshold. Nothing is committed yet.
+
+Read `po_status` to find out which. The status **is** the answer; there is no second field saying the same thing.
+
+<Note>
+The approval threshold defaults to `0`, which means nothing auto-approves until an administrator raises it. If every submit is landing on `pending_approval`, that is why.
+</Note>
+
+Submit also re-checks that the vendor is still active and that the warehouse is still active. A `422` names whichever failed.
+
+### `POST /pos/{no}/approve` — `po.approve`
+
+**No request body.** A body would invite "approve as somebody else".
+
+`200` with the order at `approved`. Approving writes the open-supply position and notifies the vendor.
+
+Two refusals are distinct, and both are `403`:
+
+| `requires` | Meaning |
+|------------|---------|
+| `supervisor` | You do not hold `po.approve` at all. |
+| `approver ≠ creator` | You hold it, but you raised this order. |
+| `approver ≠ amender` | You hold it, but you made the last amendment to it. |
+
+The last two are the separation-of-duties rules. Both can be relaxed by setting the `self_approval` policy to `{"allowed": true}`.
+
+### The order of operations at approval
+
+The status flips to `approved` **before** the open-supply position is written, and the vendor notification runs **after** both. That ordering is deliberate:
+
+- If the position write fails, the approval has still happened and is visible. The reconciler repairs the position.
+- The notification **never blocks the approval**. A supplier email that bounces must not leave an order stuck.
+
+## Amend an approved order
+
+### `POST /pos/{no}/amend` — `po.amend`
+
+Amendment is day-to-day purchasing work — a delivery slips, a quantity is cut back — so it sits at the operator floor. What stops an operator committing more of the company's money unaided is not the capability, it is that a material amendment sends the order back for approval.
+
+```json
+{
+  "reason": "Supplier confirmed a one-week slip on the sugar line.",
+  "expected_date": "2026-08-19",
+  "lines": [
+    { "record_id": "rec_01JB...", "ordered_qty": 8 }
+  ]
+}
+```
+
+`reason` is **required**.
+
+`lines` here is a **patch, not a replacement** — unlike the draft edit route. A line you do not mention is left alone. This is the one place the two differ, and it differs because an amendment names what changed.
+
+`200` with the order in its new state. Read `po_status`:
+
+- Still `approved` — the amendment was within the snapshotted threshold and added no line. The open-supply position is adjusted in place.
+- Back to `pending_approval` — the amendment added a line or crossed the threshold. The commitment is withdrawn until somebody approves it again.
+
+The `purchase.po.amended` event carries `awaiting_reapproval` and the total both before and after, so a subscriber tracking committed spend does not have to derive the delta from its own stale copy.
+
+## Withdraw part or all of an order
+
+### `POST /pos/{no}/cancel` — `po.cancel`
+
+```json
+{ "reason": "Duplicate of PO-000508." }
+```
+
+`reason` is **required** and lands on `cancel_reason`. No other field is read from the body — a body that could carry more would invite "cancel these lines only", which is a short-close and a different capability.
+
+`200` with the order at `cancelled` and every remaining commitment withdrawn.
+
+**A partly-received order can be cancelled.** What was delivered stays in stock. The `purchase.po.cancelled` event carries `received_stands` so a consumer does not read "cancelled" as "nothing happened" and reverse a receipt that is real.
+
+### `POST /pos/{no}/lines/{line}/short-close` — `po.short_close`
+
+Close one line early, when the supplier will not deliver the rest.
+
+`{line}` is the **line's platform record id**, not its position in the list. An ordinal renumbers when a line is removed and would silently point at a different line. An unknown id is a `404` naming what to send.
+
+```json
+{ "reason": "Supplier confirmed the remaining 3 bags are unavailable this quarter." }
+```
+
+`reason` is **required**. No other field is read — a body carrying a quantity would invite "close 6 of the 10", which is an amendment.
+
+`200` with the **whole order**, not just the line. That is the point of the response: you see whether the order itself closed as a result, without a second read.
+
+## Finish an order
+
+### `POST /pos/{no}/close` — `po.close`
+
+```json
+{ "reason": "All lines satisfied; filing for the month." }
+```
+
+`reason` is **required** and lands on `close_reason`.
+
+Only allowed once every line is already at zero pending. It withdraws nothing — its whole effect is that a finished order stops appearing as outstanding. That is why it sits at the operator floor while cancel and short-close need a supervisor.
+
+## Read orders
+
+### `GET /pos` — `view`
+
+| Query | Effect |
+|-------|--------|
+| `vendor` | Only this vendor's orders |
+| `status` | Only orders in this status |
+
+```json
+{ "pos": [ { "po_no": "PO-000512", "…": "…" } ] }
+```
+
+### `GET /pos/{no}` — `view`
+
+The order with its lines, or `404`.
+
+## Line quantities
+
+Every quantity on a line is maintained by the module. None can be written by a caller.
+
+| Field | Meaning |
+|-------|---------|
+| `ordered_qty` | What you ordered, in `purchase_uom`. |
+| `base_qty` | The same quantity in the item's base unit. Derived from `conversion_factor`. |
+| `received_qty` | What has physically arrived. |
+| `rejected_qty` | Of that, what was rejected. Posts no stock. |
+| `accepted_qty` | `received_qty − rejected_qty`. This is what posts stock. |
+| `pending_qty` | What is still expected. |
+| `short_closed_qty` | What was withdrawn by a short-close. |
+| `line_status` | `open`, `closed` or `cancelled`. |

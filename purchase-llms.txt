@@ -1,0 +1,252 @@
+# ERPLite Purchase Module — LLM Context
+
+> Developer reference for the ERPLite Purchase API. Purchase buys goods: vendors and their price lists, purchase orders through a strict state machine, goods receipts, min/max replenishment advice, and governance policies. It NEVER writes stock — posting a receipt calls Inventory's Receive across a module seam, and Inventory writes the movements. "Open supply" (what is already on order per item+warehouse) is an authoritative stored position, not a query over orders. This file is self-contained context for an AI agent working against the API. Verify shapes here before inventing fields; all shapes below are taken from the live code.
+
+## Base URL, auth, allowlist
+
+- Base URL: `https://api.erplite.app/bff-service/purchase` (every path below is relative to it).
+- Auth: `Authorization: Bearer <token>`. The token carries the account AND the caller. No endpoint accepts an `account` param.
+- Allowlist: the account must be enabled for `/bff-service/purchase/*` (pilot, env `PURCHASE_PILOT_ACCOUNTS`). Not enabled → `403 not_enabled`, on EVERY route including `/health`. Separate from Inventory's allowlist.
+- `GET /whoami` returns the caller's role + capabilities. Gate UI on it; the server still enforces every write.
+- Module version today: `0.4.0`.
+
+## Roles and capability floor
+
+Two kinds of caller, NOT one ladder.
+- Users: four roles, ascending — `viewer < operator < supervisor < admin`. A user holds the highest role bound to them in `pur_role_binding` (only ACTIVE bindings; a binding may match by platform role, team, or user id, and a caller holds the union).
+- Integration: a named API principal, NOT on the ladder. Fixed set: `view`, `recommendation.ingest`. NOTHING else — it cannot approve, cancel, post/reverse a receipt, deactivate a master, change a policy, or create a subscription, whatever its bindings say. A binding naming its user id does NOT promote it.
+- `recommendation.ingest` is OFF the ladder in the other direction: no user role grants it, not even admin.
+
+Capability → minimum user role (the FLOOR; accounts may tighten, never loosen):
+
+| Capability | Min role |
+|---|---|
+| view | viewer |
+| vendor.maintain | operator |
+| catalog.maintain | operator |
+| recommendation.review | operator |
+| po.draft | operator |
+| po.amend | operator |
+| po.close | operator |
+| grn.post | operator |
+| export | operator |
+| po.approve | supervisor |
+| po.cancel | supervisor |
+| po.short_close | supervisor |
+| receipt.override | supervisor |
+| grn.reverse | supervisor |
+| master.deactivate | supervisor |
+| import.commit | supervisor |
+| config.manage | admin |
+| recommendation.ingest | integration only (no role) |
+
+Non-obvious placements: `po.close` is OPERATOR while `po.short_close` is SUPERVISOR (close withdraws nothing and is only legal at zero pending; short-close withdraws quantity from a supplier already sent the order). Reads of `/policies` and `/reorder-policies` need `config.manage`, unlike vendor/PO/GRN reads which need only `view`. `export` is operator (an export is a read of documents you can already open singly).
+
+## Conventions
+
+- Documents addressed by NUMBER (`PO-000512`, `GRN-000045`), allocated at DRAFT CREATE. Masters: vendor by `vendor_code`; catalog line, policies, reorder policies by platform `recordId` (their identity is a composite key that does not belong in a URL).
+- Action routes are SUB-PATHS: `POST /pos/{no}/submit`, not `/pos/{no}:submit`.
+- NO route writes a status field. `po_status`/`grn_status`/`status` are refused on every write body. Transitions happen only through action routes.
+- NO DELETE anywhere except `DELETE /subscriptions/{id}`. Masters are deactivated (codes never reused); orders are cancelled/closed; a posted receipt is REVERSED by a new compensating document.
+- NO `idempotency_key` on Purchase writes (unlike Inventory). Retrying a draft-create allocates a SECOND number — use `external_key` to find the first. Action routes are state transitions (re-approving is `409 state_conflict`). Receipt posting IS idempotent across the Inventory seam, keyed `grn-post-<grn_no>`.
+- Derived fields are REFUSED (422 naming the field), never silently dropped. PO header: po_no, po_status, currency, payment_terms, approval_threshold_snapshot, created_by, submitted_by, approved_by, last_amended_by, cancel_reason, close_reason. PO line: received_qty, accepted_qty, rejected_qty, pending_qty, base_qty, conversion_factor, line_total, short_closed_qty, line_status. This matters most for `last_amended_by` — otherwise a caller could name somebody else as amender and defeat separation of duties from the wire.
+- Identity fields are immutable and refused with a message naming the right path: `vendor_code`; catalog `(vendor_code,item_code)`; policy `(scope_type,scope_ref,policy_key)`; reorder policy's four scope fields.
+- REQUIRED `reason` in body: all `/policies` and `/reorder-policies` writes (incl. deactivate/reactivate), `/pos/{no}/amend`, `/cancel`, `/close`, `/lines/{line}/short-close`, `/grns/{no}/reverse`. Goes to the audit record; cancel/close also land it on the document.
+- Dates: calendar days `YYYY-MM-DD` for order_date/expected_date/receipt_date/mfg_date/expiry_date.
+- Quantities: order lines in `purchase_uom`; open supply and reorder policy params in BASE units.
+
+### HTTP status
+200 read or successful action · 201 first-time create · 204 subscription delete · 401 webhook signature failed · 403 not_enabled/forbidden · 404 not_found · 409 state_conflict/idempotency_key_reused · 422 validation_failed/policy_violation/policy_unresolved · 501 not_implemented · 503 engine_unavailable.
+
+### Error envelope
+`{ "error": <code>, "message": <str>, ...context }`. Context present only when actionable, never null: `policy`, `scope`, `line`, `field`, `capability`, `requires`. Codes: validation_failed(422), policy_violation(422), policy_unresolved(422), state_conflict(409), idempotency_key_reused(409), forbidden(403), not_enabled(403), not_found(404), not_implemented(501), engine_unavailable(503), internal(500).
+
+`requires` means two different things by status. On a 403 it is the ROLE needed (`supervisor`) — or a separation-of-duties rule (`approver ≠ creator`, `approver ≠ amender`). On a 422 `policy_violation` it is the CAPABILITY that could carry the request through (only over-receipt tolerance uses this: `receipt.override`).
+
+## The PO state machine
+
+`draft → pending_approval → approved → partially_received → received → closed`, plus `cancelled`.
+
+- SUBMIT CAN LAND ON `approved` DIRECTLY when total < approval_threshold. Threshold DEFAULTS TO 0, so nothing auto-approves until an admin raises it. Read `po_status`; do not assume submit means pending_approval.
+- AMEND CAN SEND AN APPROVED ORDER BACK to `pending_approval` if it adds a line or crosses the snapshotted threshold.
+- Commitment (open supply) exists only for `approved` and `partially_received`. A draft or first-time pending_approval order contributes NOTHING.
+- Receivable PO statuses: approved, partially_received, received, closed. Refused: draft, pending_approval (never sent to a supplier), cancelled. `received`/`closed` are allowed deliberately so a tolerated over-receipt can land.
+
+## Endpoints
+
+Format: METHOD path — capability — request → response — note.
+
+### Health / identity
+- `GET /health` — allowlisted — → `{module:"purchase",version,status:"ok"}`.
+- `GET /whoami` — allowlisted — → `{kind:"user"|"integration", id, display, stamp, role:role|null, roles:[], capabilities:[]}`. Integration: role null.
+
+### Vendors
+- `POST /vendors` — vendor.maintain — `{vendor_code, vendor_name, tax_identity?, contact_name?, email?, phone?, address?, comms_preference?:"email"|"none", email_consent?:bool, payment_terms?, default_lead_time_days?, external_key?}` → 201 VendorView.
+- `PUT /vendors/{code}` — vendor.maintain — same minus `vendor_code` and `status` (both REFUSED, naming the lifecycle routes) → 200 VendorView.
+- `POST /vendors/{code}/deactivate` — master.deactivate — `{override_reason?}` → 200. BLOCKED while the vendor holds a LIVE OPEN-SUPPLY COMMITMENT unless `override_reason` is given (recorded as a waiver). The guard reads `pur_open_supply`, not a lagging list of POs.
+- `POST /vendors/{code}/reactivate` — master.deactivate — no body → 200.
+- `GET /vendors` — view — → `{vendors:[VendorView]}`.
+- `GET /vendors/{code}` — view — → VendorView.
+
+VendorView = `{recordId, vendor_code, vendor_name, tax_identity, contact_name, email, phone, address, comms_preference, email_consent, payment_terms, default_lead_time_days, status:"active"|"inactive", external_key}`. `address` is printed on the vendor PDF; comms_preference/email_consent decide whether it is emailed.
+
+### Vendor-item catalog
+- `POST /catalog` — catalog.maintain — `{vendor_code, item_code, vendor_item_code?, price?, currency?, lead_time_days?, moq?, purchase_uom, hsn_tax_ref?, external_key?}` → 201 CatalogLineView. Validates `item_code` against INVENTORY by business code; unknown/inactive → 422.
+- `PUT /catalog/{id}` — catalog.maintain — editable: vendor_item_code, price, currency, lead_time_days, moq, purchase_uom, hsn_tax_ref, external_key. REFUSED: vendor_code, item_code, status.
+- `POST /catalog/{id}/deactivate` | `/reactivate` — master.deactivate — no body → 200.
+- `GET /catalog?vendor=` — view — → `{catalog:[CatalogLineView]}`.
+- `GET /catalog/{id}` — view — → CatalogLineView.
+
+CatalogLineView = `{recordId, vendor_code, item_code, vendor_item_code, price, currency, lead_time_days, moq, purchase_uom, hsn_tax_ref, status, external_key}`. `purchase_uom` MUST have a conversion to the item's base unit in Inventory or a PO line using it cannot be raised.
+
+### Purchase orders
+- `POST /pos` — po.draft — `{vendor_code, warehouse, order_date?, expected_date?, external_key?, recommendation_refs?:[], lines:[{item_code, ordered_qty, purchase_uom, unit_price?, tax_ref?}]}` → 201 PoView at draft, `po_no` already allocated. Snapshots currency + payment_terms; resolves and snapshots `conversion_factor`, derives `base_qty`; validates item, warehouse and UoM conversion (each a 422).
+- `PUT /pos/{no}` — po.draft — same fields; `lines` REPLACES the set (send `record_id` to keep/edit a line, omit it to add, leave it out to remove). DRAFT ONLY; otherwise 409 state_conflict.
+- `POST /pos/{no}/submit` — po.draft — NO BODY → 200 PoView. Lands on `approved` (below threshold) or `pending_approval`. Re-checks vendor active + warehouse active.
+- `POST /pos/{no}/approve` — po.approve — NO BODY → 200 PoView. Two extra 403s: `requires:"approver ≠ creator"`, `requires:"approver ≠ amender"` (relaxed by self_approval policy). Order of operations: status flips FIRST, then open supply is written, then the vendor is notified — the notification NEVER blocks the approval.
+- `POST /pos/{no}/amend` — po.amend — `{reason(REQUIRED), expected_date?, lines?:[{record_id, ordered_qty?, ...}]}` → 200 PoView. `lines` here is a PATCH, not a replacement (unlike PUT). Read `po_status` for whether it went back to pending_approval.
+- `POST /pos/{no}/cancel` — po.cancel — `{reason(REQUIRED)}` → 200 PoView at cancelled. NO other body field is read. A partly-received order CAN be cancelled; received stock stands.
+- `POST /pos/{no}/lines/{line}/short-close` — po.short_close — `{reason(REQUIRED)}` → 200 the WHOLE PoView. `{line}` is the LINE'S PLATFORM RECORD ID, not an ordinal (an ordinal renumbers and would retarget). Unknown id → 404.
+- `POST /pos/{no}/close` — po.close — `{reason(REQUIRED)}` → 200 PoView at closed. Only legal once every line is at zero pending.
+- `GET /pos?vendor=&status=` — view — → `{pos:[PoView]}`.
+- `GET /pos/{no}` — view — → PoView.
+
+PoView = `{recordId, po_no, vendor_code, warehouse, order_date, expected_date, payment_terms, currency, po_status, approval_threshold_snapshot, created_by, submitted_by, approval:{...}, last_amended_by, cancel_reason, close_reason, recommendation_refs:[], external_key, updated_on, total, lines:[PoLineView]}`.
+
+THERE IS NO `approved_by` FIELD. It was removed, not renamed, because an amended order is not approved and still records who approved the original — `po.approved_by` would render "Pending approval / Approved by Bob". Instead:
+`approval = {in_force:bool, awaiting:bool, awaiting_reapproval:bool, last_approved_by:string|null, auto_approved:bool}`.
+- `in_force` — is an approval standing behind this order RIGHT NOW. True only for approved|partially_received. READ THIS before rendering anything approving.
+- `awaiting_reapproval` — approved, then amended. This is the difference between a live commitment counted in open supply and a document that is not a commitment.
+- `last_approved_by` — history; survives amendment and cancellation. Auto-approval stamp is `system:auto_approve`; read `auto_approved` rather than string-matching. An auto-approval IS a previous approval.
+
+PoLineView = `{recordId, item_code, ordered_qty, purchase_uom, unit_price, tax_ref, line_total, base_qty, conversion_factor, received_qty, accepted_qty, rejected_qty, pending_qty, short_closed_qty, line_status:"open"|"closed"|"cancelled"}`. `total` on the header is DERIVED from lines, never stored.
+
+### Goods receipts
+- `POST /grns` — grn.post — PO-linked: `{warehouse, receipt_date?, po_no, vendor_code?, external_key?, lines:[{po_line(REQUIRED), received_qty, rejected_qty?, reject_reason?, batch_code?, mfg_date?, expiry_date?, supplier_lot?, uom?, unit_cost?}]}`. Ad-hoc: `{warehouse, vendor_code(REQUIRED), adhoc_reason(REQUIRED), lines:[{item_code(REQUIRED), received_qty, ...}]}` → 201 GrnView at draft. `adhoc_reason` REFUSED with po_no; `po_line` REFUSED on ad-hoc. Batch-tracked item → `batch_code` REQUIRED, enforced at DRAFT time.
+- `PUT /grns/{no}` — grn.post — patch; `lines` supplied REPLACES the set. `po_no` CANNOT be changed and is refused.
+- `POST /grns/{no}/post` — grn.post (+ receipt.override if `override_reason` present) — `{override_reason?}` (the ONLY field) → 200 PostedGrn.
+- `POST /grns/{no}/reverse` — grn.reverse — `{reason(REQUIRED)}` → 200 ReversedGrn — a NEW compensating document; the original is never edited.
+- `GET /grns?vendor=&po=&status=` — view — → `{grns:[GrnView]}`.
+- `GET /grns/{no}` — view — → GrnView.
+
+GrnView = `{recordId, updated_on, grn_no, grn_status:"draft"|"posted"|"cancelled", warehouse, receipt_date, vendor_code, po_no, adhoc_reason, override_reason, inv_receipt_doc_no, receive_idempotency_key, reversal_of, external_key, lines:[GrnLineView]}`.
+GrnLineView = `{recordId, po_line, item_code, ordered_ref_qty, received_qty, accepted_qty, rejected_qty, reject_reason, batch_code, mfg_date, expiry_date, supplier_lot, uom, unit_cost}`.
+
+TWO RECEIPT NUMBERS FOR ONE DELIVERY, ON PURPOSE: `grn_no` is Purchase's (operator-facing); `inv_receipt_doc_no` is INVENTORY's for the same physical event. Both are on the record and in the export. `accepted_qty = received_qty − rejected_qty` and ONLY the accepted quantity posts stock. `rejected_qty > 0` requires `reject_reason`.
+
+PostedGrn = `{grn:GrnView, inv_receipt_doc_no:string|null, movements_posted:int, replayed:bool, po_status:PoStatus|null, open_supply_unchanged:[{po_line, reason:"replayed"|"already_settled"}], tolerance_warnings:[], override_reason:string|null}`. `inv_receipt_doc_no` is null when nothing was accepted (no Receive call made); `po_status` null on ad-hoc. `open_supply_unchanged` entries are NORMAL, not errors.
+ReversedGrn = `{grn:GrnView, reversal_of:string, movements_reversed:int, replayed:bool, po_status:PoStatus|null}`.
+
+Posting sequence: resolve tolerance → call Inventory Receive (key `grn-post-<grn_no>`) → record inv number + flip to posted → reduce open supply → roll up PO lines and status → emit `purchase.grn.posted`. ALL-OR-NOTHING across lines.
+
+### Open supply
+- `GET /open-supply?item=&warehouse=&horizon_days=` — view — → `{horizon_until?:Date, positions:[{item, warehouse, pending_base_qty, lines:[{po_no, line_id, open_base_qty, expected_date}]}]}`.
+
+`item`/`warehouse` are FILTERS, not a required grain — either, both, or neither. A question matching more positions than one read will answer is REFUSED with a 422 saying how to narrow it, never truncated (a short list of arrivals reads exactly like a complete one). Quantities are BASE UNITS, and the field names say so. `horizon_days` FILTERS this same position and never runs a second calculation — under a horizon, `pending_base_qty` is the total of the LINES SHOWN, not the grain's whole commitment. `horizon_until` appears only when a horizon was asked for (the window is anchored on server time, which the caller does not have).
+
+### Reorder policies (ALL routes, incl. reads, need config.manage)
+- `POST /reorder-policies` — `{scope_type:"sku_warehouse"|"material_category", scope_item_code?, scope_warehouse?, scope_material_category?, policy_name:"min_max"|"none", params:{min,max,moq?}, fulfilment_path:"purchase", external_key?, reason(REQUIRED)}` → 201.
+- `PUT /reorder-policies/{id}` — editable: policy_name, params, fulfilment_path, external_key + reason. REFUSED: all four scope fields, status.
+- `POST /reorder-policies/{id}/deactivate` | `/reactivate` — `{reason(REQUIRED)}` → 200.
+- `GET /reorder-policies?scope_type=` → `{reorder_policies:[...]}`; `GET /reorder-policies/{id}` → the row.
+
+View = `{recordId, scope_type, scope_material_category, scope_item_code, scope_warehouse, policy_name, params:{}, fulfilment_path, status, external_key}`. PARAMS ARE IN BASE UNITS. Unknown params are REFUSED, not dropped. Reserved and NOT implemented (refused with a message): policy names `order_linked`, `coverage_target`; fulfilment paths `production`, `transfer`. `policy_name:"none"` is a real answer (do not auto-replenish) and differs from having no policy.
+
+### Recommendations
+- `GET /recommendations?item=&warehouse=` — view — → `{recommendations:[RecommendationDoc]}` (OPEN queue only).
+- `POST /recommendations/{id}/dismiss` — recommendation.review — `{reason?}` → 200. A POST not a DELETE: nothing is deleted; the row survives carrying who and why.
+- `POST /recommendations/convert` — recommendation.review — `{recommendation_ids:[], vendor_code?, expected_date?}` → 201 `{purchase_orders:[{po_no, warehouse, recommendation_ids:[]}]}`. GROUPED BY WAREHOUSE (one PO per warehouse). Raises DRAFTS; the approval threshold still applies. Same validation path as a hand-raised order.
+- `POST /recommendations/ingest` — recommendation.ingest (INTEGRATION ONLY) — `{item, warehouse, quantity, suggested_source?:[], explanation?, source?, opaque_external?}` → 201 if created / 200 if the grain already had one: `{item, warehouse, quantity, producer, created:bool}`. Deliberately thin; its designed first customer (Production) is no longer the plan.
+
+RecommendationDoc = `{id, account_id, item, warehouse, status:"open"|"converted"|"dismissed"|"resolved", shortfall_qty(BASE), suggested_source:[vendor codes], blocker:"no_eligible_source"|null, fulfilment_path:"purchase", producer, explanation_snapshot:{...}, converted_po_ref, dismissed_by, dismiss_reason, created_at, updated_at, resolved_at}`.
+
+`id` is the ENGINE's id (there is no platform record behind a recommendation). Opaque — never parse it, and NEVER address a recommendation by its `(item,warehouse)` grain: the grain identifies only the OPEN one and silently retargets if that row is replaced between a read and an action.
+
+explanation_snapshot = `{on_hand, available, commitments_tracked:bool, open_supply, position, policy:{min,max,moq}, policy_source:{recordId,scope_type,scope}|null, moq_overshoot:bool, taken_at}` — all base units. `commitments_tracked` is FALSE in every account today (so `available` == `on_hand`); it is pinned in the snapshot so advice written before reservation ships still says which meaning it used. `policy_source: null` means the module default was used.
+
+ONE OPEN RECOMMENDATION PER `(item,warehouse)`, enforced by a real unique index. A second producer finding a need on a grain another producer owns STANDS DOWN — the sweep counts that as `deferred`, which is neither success nor failure and means two systems disagree about a shelf.
+
+### Governance policies (ALL routes, incl. reads, need config.manage)
+- `POST /policies` — `{scope_type:"account"|"vendor"|"material_category", scope_ref?, policy_key, policy_value, external_key?, reason(REQUIRED)}` → 201.
+- `PUT /policies/{id}` — editable: policy_value, external_key + reason. REFUSED: scope_type, scope_ref, policy_key, status.
+- `POST /policies/{id}/deactivate` | `/reactivate` | `/reattach` — `{reason(REQUIRED)}` → 200. `reattach` hands the row back to the installer (sets stewardship_source to `purchase-installer`); it is not an edit of the value.
+- `GET /policies?scope_type=&policy_key=` → `{policies:[...]}`; `GET /policies/{id}` → the row.
+
+View = `{recordId, scope_type, scope_ref, policy_key, policy_value, status, external_key, stewardship_source:"purchase-installer"|"account"|null}`.
+
+Three keys and their allowed scopes:
+| key | value | scopes |
+|---|---|---|
+| approval_threshold | `{amount:number}` | account ONLY |
+| self_approval | `{allowed:boolean}` | account ONLY |
+| over_receipt_tolerance | `{mode:"allow_with_warning"}` or `{mode:"block_beyond_pct", pct:number}` | account, material_category, vendor |
+
+Resolution is MOST-SPECIFIC-WINS. Inactive rows do not resolve. A row at a scope its key does not support is ignored. CONTRADICTORY DUPLICATE rows at the winning scope → error, not a coin toss. An UNPARSEABLE stored value → error.
+A MISSING row degrades to a hard-coded default equal to the seed (so deleting a row does not brick submit/receive) — but ONLY for "no row resolved"; the two error cases above still refuse.
+VALUES ARE NOT COERCED: a number must be a number, a boolean a boolean. `{"allowed":"false"}` is REFUSED, because `Boolean("false")` is true and a lenient parser would silently switch off separation of duties. Unknown keys are refused, not dropped. `pct` is REQUIRED for block_beyond_pct and FORBIDDEN for allow_with_warning.
+`approval_threshold` DEFAULTS TO 0 → nothing auto-approves until an admin raises it. Its value is SNAPSHOTTED onto the PO as `approval_threshold_snapshot`, so an amendment is judged against the threshold the order was approved under.
+
+### Exports / imports
+- `GET /exports/po?po_no=&from=&to=&format=csv` — export — JSON `{entity:"po", headers:[], rows:[], csv, documents:int}` or text/csv attachment. One row PER LINE (header fields repeat).
+- `GET /exports/grn?grn_no=&from=&to=&format=csv` — export — same shape.
+- `GET /exports/{entity}` — export — entity ∈ {vendors, catalog} → `{entity, headers, rows, csv, records:int}`. Unknown entity → 404 naming the valid ones. Columns round-trip back through the importer (+ `status` for the reader).
+- `POST /imports` — import.commit — `{entity:"vendors"|"catalog", csv:string}` → 200 `{import_id, entity, status:"staged", total, ok_count, error_count, rows:[{row_no, external_key, verdict:"ok"|"error", error?}]}`. DRY RUN; writes NOTHING. A column-count mismatch fails the WHOLE file as a 422 (after one, no row is the row it appears to be).
+- `POST /imports/{id}/commit` — import.commit — no body → 200 `{import_id, entity, committed, updated, skipped, errors, already_committed:bool}`. Safe to call twice.
+- `GET /imports/{id}` — import.commit — re-read a report after a dropped connection.
+
+PO columns: po_no, po_status, vendor_code, warehouse, currency, order_date, expected_date, payment_terms, approval_in_force, approved_by, created_by, submitted_by, last_amended_by, cancel_reason, close_reason, item_code, purchase_uom, ordered_qty, received_qty, accepted_qty, rejected_qty, pending_qty, short_closed_qty, line_status, unit_price, line_total, tax_ref, external_key. (`approval_in_force` and `approved_by` are SEPARATE columns — one would make history look like tense.)
+GRN columns: grn_no, grn_status, vendor_code, warehouse, receipt_date, po_no, inv_receipt_doc_no, reversal_of, adhoc_reason, override_reason, item_code, uom, ordered_ref_qty, received_qty, accepted_qty, rejected_qty, reject_reason, batch_code, mfg_date, expiry_date, supplier_lot, unit_cost, line_value, external_key.
+vendors import columns: vendor_code, vendor_name, tax_identity, contact_name, email, phone, address, comms_preference, email_consent, payment_terms, default_lead_time_days, external_key. REQUIRED: vendor_code, vendor_name.
+catalog import columns: vendor_code, item_code, vendor_item_code, price, currency, lead_time_days, moq, purchase_uom, hsn_tax_ref, external_key. REQUIRED: vendor_code, item_code, purchase_uom.
+An import NEVER deletes, never reuses a vendor code, never changes status. A document with NO date is EXCLUDED from a bounded range and INCLUDED when no range was asked for.
+
+### Events (ALL routes need config.manage — including for an integration)
+- `GET /event-types` → `{event_types:[7]}` — the same set the emitter validates against. Build forms from it; a hand-written copy drifts and produces subscriptions that never fire.
+- `POST /subscriptions` — `{name, target_url, event_types?:[]}` (empty = ALL) → 201 `{id,name,target_url,event_types,status,cursor,failure_count,last_delivery_at, secret}`. SECRET SHOWN ONCE. Cursor starts at the current high-water mark (from-now-on).
+- `GET /subscriptions` → `{subscriptions:[SubscriptionView]}` (no secret). `GET /subscriptions/{id}` → SubscriptionView.
+- `GET /subscriptions/{id}/attempts?limit=50` (clamped 1..200; a nonsense value reads as unspecified) → `{attempts:[{seq,event_id,outcome,status_code,failure_count,at,next_retry_at,error}]}` newest first.
+- `PATCH /subscriptions/{id}` — `{status:"active"|"paused"}` ONLY. `dead` is a worker conclusion and cannot be set. `active` revives a dead sub.
+- `POST /subscriptions/{id}/replay` — `{cursor?}` — OMITTED DEFAULTS TO 0 = WHOLE STREAM (deliberate; you already dedupe on event_id).
+- `DELETE /subscriptions/{id}` → 204.
+
+THERE IS NO EDIT ROUTE, on purpose: the delivery worker holds a COPY of url/types/secret (it runs outside any request with no platform token), so an edit would leave it delivering to the old URL under the old secret with both stores looking correct. Change = delete + create.
+
+Event types: purchase.recommendation.raised, purchase.recommendation.resolved, purchase.po.approved, purchase.po.amended, purchase.po.cancelled, purchase.grn.posted, purchase.policy.changed.
+
+### Admin
+- `POST /admin/sweep-reorder` — config.manage — no body → `{started_at, finished_at, grains_visited, raised, covered, resolved, no_policy, deferred, failed:[{item,warehouse,error}]}`. Runs the SAME sweep the scheduled worker runs. `no_policy` is the normal majority on a real account. `failed` does not stop the sweep.
+- `POST /admin/reconcile-events` — config.manage — no body → `{checked, repaired:[event_id]}`. Re-derives events from cancelled POs, posted GRNs and resolved recommendations. IDEMPOTENT BY CONSTRUCTION.
+- `POST /events/inventory/{accountId}` — NO SESSION AUTH, HMAC ONLY → 200 `{accepted:true,duplicate:bool}` or 401. Inbound: Inventory's deliveries so Purchase can re-evaluate a grain that just moved. Mounted OUTSIDE the authenticate+allowlist chain. Account is in the path AND the signed body, and disagreement is refused. Needs `PUR_EVENT_SECRET_KEY` on the service.
+
+## Webhook delivery contract (outbound)
+
+Headers: `Content-Type: application/json`; `X-ERPLite-Signature: t=<epoch-ms>,v1=<hex-hmac>` where hmac = HMAC-SHA256(secret, "<t>.<rawBody>"); `X-ERPLite-Event-Id`; `X-ERPLite-Event-Seq`.
+
+Body: `{account_id, event_id, seq, event_type, schema_version, entity_type, entity_id, payload, occurred_at, recorded_at}`.
+
+`event_id` is `<type>:<entity_id>:<occurred_at>` — DERIVABLE, which is what lets the repair sweep re-derive a lost event with the same id instead of publishing a duplicate.
+
+Semantics: ordered by seq; AT LEAST ONCE (dedupe on event_id); cursor advances one event at a time and only after a 2xx; non-2xx/timeout → exponential backoff from 1s capped at 5 min; after 8 consecutive failures → `dead`. Verify against the RAW body; reject a stale `t`.
+
+Payload fields a consumer must NOT try to derive: `auto_approved` + `approval_threshold_snapshot` (po.approved), `awaiting_reapproval` + `previous_total` (po.amended), `received_stands` (po.cancelled).
+
+## Gotchas
+
+- PURCHASE NEVER WRITES STOCK. Posting a GRN calls Inventory's Receive. Two receipt numbers exist for one delivery and both matter.
+- No idempotency_key on Purchase writes. Retrying a draft-create ALLOCATES A SECOND NUMBER. Use `external_key`.
+- Read `po_status` after submit — below-threshold submits land on `approved` in one step.
+- `approval_threshold` DEFAULTS TO 0. On a fresh account everything goes to pending_approval. This surprises everyone.
+- Open supply and reorder params are BASE UNITS. Comparing them against a purchase-unit quantity is wrong by the conversion factor. Writing `min: 4` for "four bags" means four kilograms.
+- A PO line is addressed by its PLATFORM RECORD ID in short-close and amend, never by ordinal.
+- `lines` semantics DIFFER by route: PUT /pos/{no} REPLACES the set; POST /pos/{no}/amend PATCHES it.
+- Reading a policy or reorder policy needs ADMIN, unlike every other read in the module.
+- There is no `approved_by` on PoView. Reach through `po.approval` — `in_force` for tense, `last_approved_by` for history.
+- Batch capture is enforced at DRAFT time, not post time, so an operator finds out while holding the delivery note.
+- An over-tolerance 422 carries `requires:"receipt.override"` — it is telling you a supervisor can post it. An OPERATOR who then sends `override_reason` gets a 403 (they asked to override and may not).
+- Under-receipt is ALWAYS allowed. No policy can refuse a short delivery.
+- A posted GRN is never edited — reverse it, which writes a new compensating document. Both remain as history.
+- There is NO discard route for an abandoned GRN draft. It stays a draft. Known gap.
+- Deactivating a vendor is refused while it holds a live commitment, unless you send `override_reason` (recorded as a waiver).
+- Subscription secrets are shown ONCE and subscriptions cannot be edited — only deleted and recreated.
+- `503 engine_unavailable` means retry, not "empty". The module will not say "nothing is on order" when it does not know.
+- Granting module access via a PLATFORM ROLE makes the population uncountable to the module, so self-approval detection cannot tell one person from fifty.

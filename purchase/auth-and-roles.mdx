@@ -1,0 +1,134 @@
+---
+title: "Authentication and roles"
+sidebarTitle: "Authentication and roles"
+description: "The bearer token, the pilot allowlist, the four module roles, and the capability each action needs."
+---
+
+## The bearer token
+
+Every request carries a bearer token:
+
+```
+Authorization: Bearer <token>
+```
+
+The token carries the account **and** the caller. No endpoint accepts an `account` parameter, and one sent anyway is ignored. There is no cross-account read.
+
+## The pilot allowlist
+
+The module is enabled per account. An account that is not on the list gets the same answer on every route, including `/health`:
+
+```json
+{ "error": "not_enabled", "message": "The purchase module is not enabled for this account." }
+```
+
+This is a `403`. It does not echo your account id back, because identifiers reflected into error bodies end up in logs and screenshots.
+
+The allowlist is separate from Inventory's. The two modules ship in one image and are switched on per account independently.
+
+## Two kinds of caller
+
+There are two kinds of caller and they are **not one ladder**.
+
+### Users
+
+Four module roles, ascending: `viewer < operator < supervisor < admin`.
+
+A user holds the roles bound to them in `pur_role_binding`, and their effective rank is the highest one. A binding can match by platform role, by team, or by named user; a caller matching several holds the union. Only **active** bindings count — deactivating a binding is how access is revoked, and honouring an inactive one would make revocation a lie.
+
+### Integrations
+
+A named API principal is **not on the role ladder** and holds a fixed set: `view` and `recommendation.ingest`. That is all.
+
+An integration cannot approve an order, cancel one, post or reverse a receipt, deactivate a vendor, change a policy, or create an event subscription — whatever its bindings say. A binding naming an integration's user id does not promote it to a module role, on purpose: those are human decisions, and an integration that could approve could move money with nobody signing off.
+
+Conversely, `recommendation.ingest` is **off the ladder entirely**. No user role grants it, not even `admin`.
+
+## The capability floor
+
+Each action needs a capability, and each capability has a minimum role. This table is a **floor**: an account may tighten it and never loosen it.
+
+| Capability | Minimum role | What it covers |
+|------------|--------------|----------------|
+| `view` | viewer | Every read: vendors, catalog, orders, receipts, open supply, recommendations |
+| `vendor.maintain` | operator | Create and edit a vendor |
+| `catalog.maintain` | operator | Create and edit a catalog line |
+| `recommendation.review` | operator | Dismiss a recommendation, or convert one into a draft order |
+| `po.draft` | operator | Create, edit and submit a purchase order |
+| `po.amend` | operator | Amend an approved order |
+| `po.close` | operator | Close a finished order administratively |
+| `grn.post` | operator | Create, edit and post a goods receipt |
+| `export` | operator | Export documents and master data |
+| `po.approve` | supervisor | Approve an order waiting for approval |
+| `po.cancel` | supervisor | Cancel an order |
+| `po.short_close` | supervisor | Short-close one line of an order |
+| `receipt.override` | supervisor | Post a receipt the tolerance policy would refuse |
+| `grn.reverse` | supervisor | Reverse a posted receipt |
+| `master.deactivate` | supervisor | Deactivate or reactivate a vendor or catalog line |
+| `import.commit` | supervisor | Dry-run and commit a master-data import |
+| `config.manage` | admin | Policies, reorder policies, subscriptions, admin routes |
+| `recommendation.ingest` | *integration only* | Submit a recommendation from an external planner |
+
+### Why some of these sit where they do
+
+**`po.close` is an operator and `po.short_close` is a supervisor.** They look similar and are not. A short-close *withdraws* a quantity from a supplier who has already been sent the order — money, and a decision somebody should own. A close withdraws nothing: it is only allowed once every line is already at zero pending, so its whole effect is that a finished order stops appearing as outstanding. Putting a supervisor in front of tidying up would leave finished orders sitting in `received` because nobody senior was around.
+
+**Reading a policy needs `config.manage`, the same as writing one.** That differs from vendors and orders, where reads need only `view`. Reorder parameters and approval thresholds are commercial configuration — what you buy and when, and who may commit the company's money — so an operator seeing them is not assumed.
+
+**An export is an operator's job.** An export is a read of documents that person can already open one at a time. Putting a supervisor in front of it would mean a buyer chasing somebody senior to hand their own month's orders to the accountant, and the predictable result is a screenshot or a copied grid, which is worse in every way.
+
+**Posting a receipt is an operator's job; posting one *over tolerance* is not.** The override is a second capability, checked only when you supply an `override_reason`. An operator who supplies one meets a `403`. An operator who supplies none and needs one meets a `422` that names the capability which could carry it through.
+
+## Find out what you may do
+
+```bash
+curl https://api.erplite.app/bff-service/purchase/whoami \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "kind": "user",
+  "id": "u-8812",
+  "display": "Asha Menon",
+  "stamp": "user:u-8812",
+  "role": "supervisor",
+  "roles": ["operator", "supervisor"],
+  "capabilities": [
+    "view", "vendor.maintain", "catalog.maintain", "recommendation.review",
+    "po.draft", "po.amend", "po.close", "grn.post", "export",
+    "po.approve", "po.cancel", "po.short_close", "receipt.override",
+    "grn.reverse", "master.deactivate", "import.commit"
+  ]
+}
+```
+
+An integration returns `"kind": "integration"` and `"role": null`, because it is not on the ladder.
+
+Gate your UI on `capabilities` rather than re-implementing the floor table. The server still enforces every capability on every write; `whoami` only shapes what you show.
+
+## Refusals name their rule
+
+A `403` tells you which action was refused and what it needs:
+
+```json
+{
+  "error": "forbidden",
+  "capability": "po.approve",
+  "requires": "supervisor",
+  "message": "Operator is below the supervisor floor."
+}
+```
+
+Separation of duties produces a different one, which is why the two cannot be collapsed:
+
+```json
+{
+  "error": "forbidden",
+  "capability": "po.approve",
+  "requires": "approver ≠ creator",
+  "message": "You raised this purchase order, so you may not approve it."
+}
+```
+
+The first says "ask a supervisor". The second says "ask a *different* supervisor".

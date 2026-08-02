@@ -1,0 +1,200 @@
+---
+title: "Set up automatic replenishment"
+sidebarTitle: "Set up replenishment"
+description: "Configure a min/max policy, force a sweep, read the advice, and turn it into a draft order."
+---
+
+The replenishment engine watches stock and advises what to buy. This guide sets one item up, proves it works, and converts the advice into an order.
+
+```bash
+export TOKEN="…"
+export BASE="https://api.erplite.app/bff-service/purchase"
+```
+
+You need `config.manage` (admin) for steps 1 to 3, and `recommendation.review` (operator) for step 5.
+
+## 1. Decide the numbers, in base units
+
+A min/max policy needs three:
+
+| Parameter | Meaning |
+|-----------|---------|
+| `min` | Below this position, buy. |
+| `max` | Buy back up to this. |
+| `moq` | Never order less than this. Optional. |
+
+**All three are in the item's base unit**, not the unit you buy in. The engine compares them against Inventory's `available` plus open supply, both of which are base units.
+
+So for sugar held in kilograms and bought in 50 kg bags, a policy of `min: 200, max: 1000` means 200 kg and 1000 kg — four bags and twenty. Writing `min: 4` would tell the engine to reorder below four **kilograms**.
+
+## 2. Create the policy
+
+```bash
+curl -s -X POST "$BASE/reorder-policies" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "scope_type": "sku_warehouse",
+    "scope_item_code": "SKU-SUGAR-50KG",
+    "scope_warehouse": "WH-MAIN",
+    "policy_name": "min_max",
+    "params": { "min": 200, "max": 1000, "moq": 50 },
+    "fulfilment_path": "purchase",
+    "reason": "Q3 demand plan; sugar moved to weekly replenishment."
+  }'
+```
+
+`reason` is required on every policy write. It goes onto the audit record.
+
+`201` with the policy.
+
+### The other scope
+
+`scope_type: "material_category"` sets one policy for a whole category rather than one item and warehouse. Use `scope_material_category` instead of the item and warehouse fields.
+
+### Turning replenishment off for a grain
+
+`policy_name: "none"` with no params. That is a real answer meaning "do not replenish this automatically", and it is different from having no policy at all.
+
+## 3. Make sure a vendor can supply it
+
+The engine suggests sources from **active catalog lines**. Without one, it still raises the recommendation — a shortfall you cannot source is exactly the thing somebody needs to see — but it marks it:
+
+```json
+{ "blocker": "no_eligible_source", "suggested_source": [] }
+```
+
+If you followed [Raise an order and receive it](/purchase/guides/raise-an-order-and-receive-it), you already have a catalog line for `ACME`.
+
+## 4. Force a sweep and read the result
+
+Do not wait for the schedule.
+
+```bash
+curl -s -X POST "$BASE/admin/sweep-reorder" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "started_at": "2026-08-02T11:02:00.114Z",
+  "finished_at": "2026-08-02T11:02:04.882Z",
+  "grains_visited": 318,
+  "raised": 1,
+  "covered": 302,
+  "resolved": 0,
+  "no_policy": 15,
+  "deferred": 0,
+  "failed": []
+}
+```
+
+`raised: 1` means the engine found your grain short. If it says `0` and `covered: 303`, you have more stock than `min` — either lower the stock, or raise `min` to prove the mechanism.
+
+`no_policy` counts grains with no reorder policy at all. On a real account that is the normal majority, not a warning.
+
+### Read the advice
+
+```bash
+curl -s "$BASE/recommendations?item=SKU-SUGAR-50KG" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "recommendations": [
+    {
+      "id": "66ae1f3c9b2d4e0012a7f501",
+      "item": "SKU-SUGAR-50KG",
+      "warehouse": "WH-MAIN",
+      "status": "open",
+      "shortfall_qty": 700,
+      "suggested_source": ["ACME"],
+      "blocker": null,
+      "producer": "purchase.reorder-sweep",
+      "explanation_snapshot": {
+        "on_hand": 120,
+        "available": 120,
+        "commitments_tracked": false,
+        "open_supply": 180,
+        "position": 300,
+        "policy": { "min": 200, "max": 1000, "moq": 50 },
+        "policy_source": { "recordId": "rec_01JE...", "scope_type": "sku_warehouse", "scope": "SKU-SUGAR-50KG@WH-MAIN" },
+        "moq_overshoot": false,
+        "taken_at": "2026-08-02T11:02:01.207Z"
+      }
+    }
+  ]
+}
+```
+
+### The snapshot is how you check the engine's arithmetic
+
+Read it as a sentence: there are 120 kg on hand, 180 kg already on order, so the position is 300 kg. The policy says buy below 200 and top up to 1000. 300 is above 200 — but the snapshot was taken at a moment when it was below, and `shortfall_qty` is `1000 − 300 = 700`.
+
+Two fields are worth understanding before you trust a number:
+
+**`commitments_tracked`** is `false` in every account today, which means `available` equals `on_hand`. It is recorded rather than assumed, so that a recommendation raised before stock reservation ships still says which meaning of "available" it was working from.
+
+**`policy_source`** names the row that produced the parameters. `null` means the module's built-in default was used because no row resolved — worth knowing before you go looking for a policy that does not exist.
+
+**`moq_overshoot: true`** means the minimum order quantity forced the order above `max`. That is not an error, but it is worth seeing.
+
+## 5. Convert the advice into an order
+
+```bash
+curl -s -X POST "$BASE/recommendations/convert" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "recommendation_ids": ["66ae1f3c9b2d4e0012a7f501"],
+    "vendor_code": "ACME",
+    "expected_date": "2026-08-20"
+  }'
+```
+
+```json
+{
+  "purchase_orders": [
+    { "po_no": "PO-000513", "warehouse": "WH-MAIN", "recommendation_ids": ["66ae1f3c9b2d4e0012a7f501"] }
+  ]
+}
+```
+
+Three things happen that are worth knowing:
+
+- **It raises a draft**, not an approved order. The approval threshold still applies, which is why converting is safe at the operator floor.
+- **Recommendations are grouped by warehouse** — one order per warehouse, because a purchase order delivers to one place. Convert five recommendations across two warehouses and you get two orders.
+- **It runs the same validation** a hand-raised order does. It is the same code path, so an order raised from advice cannot be less valid than one typed in.
+
+From here the order follows the normal path: submit, approve, receive.
+
+### Or dismiss it
+
+```bash
+curl -s -X POST "$BASE/recommendations/66ae1f3c9b2d4e0012a7f501/dismiss" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{ "reason": "Covered by the standing contract with Bharat Agro." }'
+```
+
+Nothing is deleted. The row survives carrying who decided and why.
+
+## 6. Watch it retire itself
+
+Once the receipt lands and coverage recovers, the next sweep resolves the recommendation:
+
+```json
+{ "raised": 0, "covered": 303, "resolved": 1 }
+```
+
+The recommendation's status becomes `resolved` and a `purchase.recommendation.resolved` event is emitted.
+
+## What to watch for
+
+**Params are in base units.** This is the single most common mistake. A `min` written in purchase units is off by the conversion factor.
+
+**The threshold defaults to `0`.** Converted orders will land at `pending_approval` until an administrator raises `approval_threshold`.
+
+**Reading a reorder policy needs admin.** Unlike vendors and orders, the reads on this resource need `config.manage`. If your recommendations screen shows advice but not the policy behind it, that is why.
+
+**One open recommendation per grain.** `(item, warehouse)` holds at most one. When a second producer finds a need on a grain another producer already owns, it stands down and the sweep counts it as `deferred`. A non-zero `deferred` means two systems disagree about a shelf, and it is worth looking at.
+
+**Do not address a recommendation by its grain.** Use the `id`. The grain identifies only the *open* recommendation, and it silently retargets if that row is replaced between your read and your action.

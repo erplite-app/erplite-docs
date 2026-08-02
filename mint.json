@@ -48,6 +48,10 @@
     {
       "name": "Inventory",
       "url": "inventory"
+    },
+    {
+      "name": "Purchase",
+      "url": "purchase"
     }
   ],
   "anchors": [
@@ -182,6 +186,36 @@
         "inventory/guides/onboard-by-spreadsheet",
         "inventory/guides/post-a-stock-operation",
         "inventory/guides/subscribe-to-events"
+      ]
+    },
+    {
+      "group": "Purchase (Developers)",
+      "pages": [
+        "purchase/overview",
+        "purchase/concepts",
+        "purchase/auth-and-roles"
+      ]
+    },
+    {
+      "group": "API Reference",
+      "pages": [
+        "purchase/api/conventions",
+        "purchase/api/masters",
+        "purchase/api/purchase-orders",
+        "purchase/api/receipts",
+        "purchase/api/replenishment",
+        "purchase/api/policies",
+        "purchase/api/imports-exports",
+        "purchase/api/events",
+        "purchase/api/admin"
+      ]
+    },
+    {
+      "group": "Guides",
+      "pages": [
+        "purchase/guides/raise-an-order-and-receive-it",
+        "purchase/guides/set-up-replenishment",
+        "purchase/guides/subscribe-to-events"
       ]
     }
   ],
