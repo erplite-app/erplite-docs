@@ -1,0 +1,133 @@
+---
+title: "Take an order and ship it"
+description: "The whole loop end to end, including the refusals most people meet first."
+---
+
+This walks the loop against a live account. Every call needs a bearer token whose account is on the allowlist; most need a **person**, not a machine principal.
+
+<Note>
+Set `BASE=https://api.erplite.app/bff-service/orders` and `AUTH="Authorization: Bearer $TOKEN"` to follow along.
+</Note>
+
+## 1. Check you are switched on
+
+```bash
+curl -s -H "$AUTH" "$BASE/whoami"
+```
+
+An empty `capabilities` array means you are a generic API user. Orders grants those nothing — use a person's token, or one of the three named principals.
+
+## 2. Create the customer and an address
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{
+  "customer_code": "CUST-001",
+  "customer_name": "Noice",
+  "comms_preference": "none",
+  "payment_terms": "NET30"
+}' "$BASE/customers"
+```
+
+`comms_preference` is required and has no default — see [Masters](/orders/api/masters).
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{
+  "ship_to_code": "CUST-001-SITE",
+  "site_name": "Chennai site",
+  "address_line1": "1 Main Road",
+  "city": "Chennai", "state": "Tamil Nadu",
+  "postal_code": "600001", "country": "India"
+}' "$BASE/customers/CUST-001/ship-tos"
+```
+
+## 3. Raise the order
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{
+  "customer_code": "CUST-001",
+  "ship_to_code": "CUST-001-SITE",
+  "delivery_warehouse": "WH-MAIN",
+  "required_by_date": "2026-08-20",
+  "lines": [ { "item_code": "SKU-001", "entered_qty": 60, "ordered_uom": "KG", "unit_price": 10 } ]
+}' "$BASE/orders"
+```
+
+Two refusals you may meet here, both deliberate:
+
+- *Ship-to "X" belongs to a different customer.* An address is only valid for the customer it was created under.
+- *No unit of measure with code "EA".* The unit must resolve in Inventory. It is never quietly treated as base units.
+
+`delivery_warehouse` is where goods are fulfilled **from**, not the delivery address.
+
+## 4. Acknowledge and release
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{}' "$BASE/orders/SO-000042/acknowledge"
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{}' "$BASE/orders/SO-000042/release"
+```
+
+Acknowledgement locks the policy's fields and snapshots the reservation policy. Release needs authorisation alone — no quantity is consulted.
+
+## 5. Create a dispatch and allocate
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{
+  "source_warehouse": "WH-MAIN",
+  "lines": [ { "order_line_uid": "SO-000042-L01", "item_code": "SKU-001" } ]
+}' "$BASE/dispatches"
+```
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{
+  "lines": [ { "dispatch_line_uid": "DN-000017-L01", "allocated_qty": 60 } ]
+}' "$BASE/dispatches/DN-000017/allocate"
+```
+
+**This is where stock is checked.** If it is short you get the numbers:
+
+```
+SKU-001 at WH-MAIN has 48 available and line SO-000042-L01 needs 60 — short by 12.
+Allocate less, dispatch what you have, or wait for stock.
+```
+
+Allocate less and carry on — the quantity is absolute, so you can raise it later with another call.
+
+## 6. Ship
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{}' "$BASE/dispatches/DN-000017/ship"
+```
+
+This posts stock through Inventory. Check `projections.failed` in the response: an entry there is a stale display column, not a lost shipment.
+
+Confirm the stock actually moved:
+
+```bash
+curl -s -H "$AUTH" "https://api.erplite.app/bff-service/inventory/balances?item=SKU-001&warehouse=WH-MAIN"
+```
+
+`on_hand` should have fallen by what you shipped.
+
+## 7. Read the result
+
+```bash
+curl -s -H "$AUTH" "$BASE/orders/SO-000042"
+```
+
+The line now reads `allocated_qty: 0, dispatched_qty: 60` — the units **moved buckets**. If the order is complete, its status was raised to `Dispatched` inside the ship call, and `orders_dispatched` on that response said so.
+
+## Then
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{}' "$BASE/orders/SO-000042/delivered"
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{}' "$BASE/orders/SO-000042/close"
+```
+
+## If something looks wrong
+
+Run the projection reconciler in report mode — it tells you whether a number you are looking at is a stale column or a real disagreement:
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{}' \
+  "$BASE/maintenance/reconcile-projections"
+```

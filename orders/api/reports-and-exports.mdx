@@ -1,0 +1,121 @@
+---
+title: "Reports and exports"
+description: "The order queue, on-time delivery, orphaned dispatches, the operational failure surface, and the accounting hand-off."
+---
+
+## The order queue
+
+```http
+GET /reports/order-queue       → view
+```
+
+One row per open order line, carrying everything so **no drill-down is needed**: ordered, still owed, planned, made, allocated, shipped, the required-by date, the customer, and the coverage verdict.
+
+```json
+{ "rows": [ {
+  "order_no": "SO-000042", "line_uid": "SO-000042-L01", "line_no": 1,
+  "customer_code": "CUST-001", "customer_name": "Noice",
+  "item_code": "SKU-001", "warehouse": "WH-MAIN",
+  "required_by_date": "2026-08-20",
+  "ordered_qty": 500, "owed_qty": 482, "planned_qty": 0, "produced_qty": 100,
+  "allocated_qty": 0, "dispatched_qty": 18,
+  "coverage": "short", "shortfall_qty": 482,
+  "line_status": "open", "overdue": false
+} ] }
+```
+
+Computed on demand and stored nowhere. `coverage` carries the same three states as the coverage view, `unknown` included — treat it the same way.
+
+## On-time delivery
+
+```http
+GET /reports/on-time-delivery      → view
+```
+
+Per line and per order.
+
+```json
+{ "lines": [ {
+  "order_no": "SO-000042", "line_uid": "SO-000042-L01",
+  "required_by_date": "2026-08-04",
+  "shipped_on": "2026-08-08", "shipped_dispatch_no": "DN-000033",
+  "state": "late", "days": 4, "age_days": null
+} ], "orders": [ ... ] }
+```
+
+Two rules matter:
+
+**Only a line that is complete is judged.** A line 18 units into an order for 500 is `open`, not `early`. Counting a partial shipment as a delivery was a real defect here, and the fix is that `on_time`, `late` and `early` are reserved for finished lines.
+
+**A line shipped across several dispatches reports against the last one.** The customer's order is complete only when the last unit arrives, so `shipped_on` and `shipped_dispatch_no` name the final dispatch, not the first.
+
+| `state` | Meaning |
+|---|---|
+| `on_time` / `early` / `late` | Complete, and judged. `days` is the difference |
+| `open` | Not fully shipped. `age_days` says how long it has been waiting |
+| `undated` | Delivered, but with no required-by date to judge against |
+
+`undated` is deliberately not counted as on time — that would flatter every account whose dates are incomplete.
+
+<Note>
+An unparseable or missing date yields `days: null`, never `0`. Zero days late reads as "on time", which is the most flattering possible verdict to invent from a broken date.
+</Note>
+
+## Orphaned dispatches
+
+```http
+GET /reports/orphaned-dispatches      → view
+```
+
+One row per dispatch line whose order was **cancelled after the goods shipped**. Real money: stock has left and nobody is paying for it.
+
+The module cannot resolve an orphan — returns do not exist, and a clubbed dispatch cannot be partially reversed — so what it can do is refuse to hide it. Three near-misses are deliberately excluded:
+
+- An order merely **amended** — not an orphan
+- A dispatch **cancelled before shipping** — nothing left the building
+- A line shipped and then cancelled with the order still live
+
+## Operational failures
+
+```http
+GET /failures        → view
+```
+
+Things that failed where a person needs to know: a document that would not render, a delivery that could not be attempted.
+
+```json
+{ "failures": [ {
+  "kind": "dispatch_document", "entity_type": "dispatch", "entity_id": "DN-000017",
+  "reason": "The document could not be produced: Unknown template …",
+  "attempts": 2, "resolved_at": null
+} ] }
+```
+
+Open failures by default; pass `include_resolved=true` for the history. A failure that is later retried successfully is **resolved automatically** — the surface shrinks as things are fixed, so it stays worth reading.
+
+A failure here never reverses a valid order or a stock transaction. That is the whole contract: visible for retry, harmless to what already succeeded.
+
+## Exports
+
+```http
+GET /exports/order?from=2026-08-01&to=2026-08-31        → export
+GET /exports/dispatch?from=2026-08-01&to=2026-08-31     → export
+GET /exports/:entity                                     → export
+```
+
+CSV, for the accounting hand-off. Note the paths are **singular** — `/exports/order`, not `/exports/orders`.
+
+Both are **line-grained**, so they pivot. Date edges are inclusive.
+
+| Export | Columns |
+|---|---|
+| `order` | Order header repeated per line, customer, ship-to, then the line: item, uom, entered and ordered quantities, conversion factor, cancelled, returned, required, produced, allocated, dispatched, price, total |
+| `dispatch` | Dispatch header per line, customer, then the line: order and order-line uid, item, batch, allocated and shipped |
+
+<Note>
+The quantities come from the **engine**, not the platform projection. That distinction is the point: a stale display column would otherwise reach an accountant as fact. Where the engine has no entry for a dispatch line, the cell is **empty** rather than `0` — a zero is a specific, wrong, billable claim.
+</Note>
+
+<Warning>
+These exports are deliberately **not re-importable**. They are a hand-off to a finance system, not a backup. The import pipeline takes masters, not documents.
+</Warning>

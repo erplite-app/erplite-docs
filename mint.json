@@ -69,7 +69,11 @@
   "navigation": [
     {
       "group": "Getting Started",
-      "pages": ["introduction", "gettingstarted", "ai-setup/end-to-end"]
+      "pages": [
+        "introduction",
+        "gettingstarted",
+        "ai-setup/end-to-end"
+      ]
     },
     {
       "group": "Administration Hub",
@@ -93,11 +97,15 @@
     },
     {
       "group": "Reports",
-      "pages": ["reports/overview"]
+      "pages": [
+        "reports/overview"
+      ]
     },
     {
       "group": "Templates",
-      "pages": ["manufacturing/overview"]
+      "pages": [
+        "manufacturing/overview"
+      ]
     },
     {
       "group": "Getting Started",
@@ -112,7 +120,12 @@
     },
     {
       "group": "Working with Data",
-      "pages": ["tables/records", "tables/import-export", "tables/filtering-search", "tables/views"]
+      "pages": [
+        "tables/records",
+        "tables/import-export",
+        "tables/filtering-search",
+        "tables/views"
+      ]
     },
     {
       "group": "Access Control",
@@ -124,7 +137,9 @@
     },
     {
       "group": "Automations",
-      "pages": ["tables/automations"]
+      "pages": [
+        "tables/automations"
+      ]
     },
     {
       "group": "Workflows",
@@ -145,7 +160,10 @@
     },
     {
       "group": "Workflow Nodes",
-      "pages": ["workflows/screennode", "workflows/decisionnode"]
+      "pages": [
+        "workflows/screennode",
+        "workflows/decisionnode"
+      ]
     },
     {
       "group": "Automations",
@@ -158,7 +176,10 @@
     },
     {
       "group": "Going to Production",
-      "pages": ["workflows/testworkflows", "workflows/publishing"]
+      "pages": [
+        "workflows/testworkflows",
+        "workflows/publishing"
+      ]
     },
     {
       "group": "Inventory (Developers)",
@@ -216,6 +237,36 @@
         "purchase/guides/raise-an-order-and-receive-it",
         "purchase/guides/set-up-replenishment",
         "purchase/guides/subscribe-to-events"
+      ]
+    },
+    {
+      "group": "Orders (Developers)",
+      "pages": [
+        "orders/overview",
+        "orders/concepts",
+        "orders/auth-and-roles"
+      ]
+    },
+    {
+      "group": "API Reference",
+      "pages": [
+        "orders/api/conventions",
+        "orders/api/masters",
+        "orders/api/orders",
+        "orders/api/dispatches",
+        "orders/api/reservations",
+        "orders/api/demand-and-coverage",
+        "orders/api/reports-and-exports",
+        "orders/api/policies",
+        "orders/api/events",
+        "orders/api/admin"
+      ]
+    },
+    {
+      "group": "Guides",
+      "pages": [
+        "orders/guides/order-to-shipment",
+        "orders/guides/receive-orders-from-a-client-system"
       ]
     }
   ],
