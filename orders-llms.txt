@@ -42,9 +42,20 @@ NOTE: `export` is floored at OPERATOR, not viewer (settled to match Purchase).
   ALLOCATION (gate 3).
 - Quantities live in an engine POSITION keyed by `line_uid`. The columns on
   `ord_order_line` are a PROJECTION. When they disagree the engine is right.
-- Status is DERIVED and capped by a CEILING. You never write a status; you call
-  an action. `GET /orders/:orderNo` returns `ceiling` and `transitions[]` with a
-  reason for each refusal.
+- The coarse status is AUTHORISED, never derived. Seven values:
+  Draft, Received, Acknowledged, In_Progress, Delivered, Closed, Cancelled.
+  You never write one; you call an action. `GET /orders/:orderNo` returns
+  `ceiling` and `transitions[]` with a reason for each refusal.
+- How far it has been MADE and how far it has GONE are two SEPARATE DERIVED
+  fields, recomputed from the line quantities on every write:
+  `production_status` (Not_Started / Partially_Produced / Fully_Produced) and
+  `dispatch_status` (Not_Dispatched / Partially_Dispatched / Fully_Dispatched).
+  Never write these. To ask "has it shipped", read `dispatch_status` — the
+  coarse status cannot answer it, because an order can be part made and part
+  sent at once.
+- In_Production, Ready and Dispatched were coarse statuses until 2026-08-10 and
+  no longer exist. If you see them in older data or code, they map to
+  In_Progress plus the two dimensions above.
 - Quantities are ABSOLUTE, never deltas. `allocated_qty: 100` means "is now 100".
   Retry = no-op. `0` releases.
 - allocated_qty and dispatched_qty are BUCKETS. Shipping moves units from the

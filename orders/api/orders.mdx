@@ -24,7 +24,7 @@ The list takes `status`, `customer` and date filters. The detail returns the ord
       "required_qty": 500, "produced_qty": 100,
       "allocated_qty": 0, "dispatched_qty": 18, "line_status": "open" }
   ],
-  "ceiling": "In_Production",
+  "ceiling": "Acknowledged",
   "transitions": [ { "to": "Delivered", "allowed": false, "reason": "..." } ]
 }
 ```
@@ -78,9 +78,14 @@ POST /orders/:orderNo/close           → order.receipt_confirm
 
 **Acknowledge** locks the fields the account's policy names — customer, ship-to, item, quantity, price and so on — and snapshots the reservation policy each line will use. The response carries the locked list and the snapshot.
 
-**Release** moves `Acknowledged → In_Production` on **authorisation alone**. No quantity is consulted, which is what lets the first work order be created against an order that has produced nothing.
+**Release** moves `Acknowledged → In_Progress` on **authorisation alone**. No quantity is consulted, which is what lets the first work order be created against an order that has produced nothing.
 
-`Ready → Dispatched` is raised **inside shipping** when the last line completes. There is no route for it.
+Nothing raises a coarse status from quantities. Shipping used to raise
+`Ready → Dispatched` when the last line completed; both statuses were removed on
+2026-08-10 and replaced by `dispatch_status`, which is recomputed from the line
+quantities on every shipment. Read that field rather than watching for a status
+change — it is correct at every moment, where the raise was correct only if the
+order had passed through `Ready` first.
 
 ## Amend
 
