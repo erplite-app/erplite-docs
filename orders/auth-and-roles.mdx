@@ -1,0 +1,116 @@
+---
+title: "Authentication and roles"
+description: "The account allowlist, the four module roles, every capability and its floor, and the three named integration principals."
+---
+
+## Authentication
+
+Every request carries a bearer token:
+
+```http
+Authorization: Bearer <token>
+```
+
+The account comes from the token. There is no `account` parameter anywhere, and passing one changes nothing.
+
+## The allowlist comes first
+
+Orders is a pilot module behind an account allowlist. An account that is not on it receives `403 not_enabled` on **every** route, including `health` and `whoami`:
+
+```json
+{ "error": "not_enabled", "message": "The orders module is not enabled for this account." }
+```
+
+<Warning>
+Installing the module and enabling it are different things. A freshly installed account has its tables, policies and views and still answers `not_enabled` until it is added to the allowlist. If `whoami` returns 403, that is what has happened.
+</Warning>
+
+## Roles and capabilities
+
+Capabilities come from **role bindings**, not from your platform role directly. An account with no bindings grants nobody anything, whatever their platform role says.
+
+Four module roles form a ladder. The highest rung wins and it is cumulative — somebody who is both operator and supervisor gets supervisor, which already includes operator.
+
+```
+viewer → operator → supervisor → admin
+```
+
+`GET /whoami` returns what you actually hold:
+
+```json
+{
+  "kind": "user",
+  "id": "ul3byh",
+  "role": "admin",
+  "roles": ["supervisor", "admin"],
+  "capabilities": ["view", "export", "customer.maintain", "..."]
+}
+```
+
+Gate your UI on this rather than re-implementing the ladder. The server still enforces every capability on every write.
+
+### Every capability and its floor
+
+| Capability | Floor | What it lets you do |
+|---|---|---|
+| `view` | viewer | Read anything — orders, dispatches, claims, coverage, reports |
+| `export` | **operator** | Pull the order and dispatch exports, and the masters |
+| `customer.maintain` | operator | Create and edit customers and ship-to addresses |
+| `order.draft` | operator | Create, amend and cancel orders and lines |
+| `order.acknowledge` | operator | Acknowledge and release |
+| `order.receipt_confirm` | operator | Record delivery, buyer receipt, and close |
+| `dispatch.allocate` | operator | Create dispatches, allocate and release allocation |
+| `dispatch.ship` | operator | Ship a dispatch, and generate its document |
+| `dispatch.cancel` | operator | Cancel an unshipped dispatch |
+| `order.cancel` | operator | Cancel an order |
+| `order.amend_locked` | supervisor | Amend a field the acknowledgement locked |
+| `line.short_close` | supervisor | Short-close a line |
+| `dispatch.reverse` | supervisor | Reverse a posted shipment |
+| `claim.force_release` | supervisor | Force a claim open |
+| `claim.override` | supervisor | Override a claim |
+| `claim.over_claim` | supervisor | Claim more than exists |
+| `master.deactivate` | supervisor | Deactivate a customer or address |
+| `maintenance.reconcile` | supervisor | Run the reconcilers |
+| `policy.override` | supervisor | Terminal-status override |
+| `import.commit` | supervisor | Commit an import |
+| `demand.write_back` | supervisor | Write produced quantities back |
+| `config.manage` | **admin** | Change any policy |
+| `order.intake` | *integration only* | Post to the intake API |
+
+<Note>
+**`export` is floored at operator, not viewer.** The Orders requirements originally put it in the viewer row and Purchase floored it at operator; the disagreement was settled toward Purchase so the sibling modules agree. The cost is real and worth knowing: a read-only finance user can no longer pull a month of orders themselves.
+</Note>
+
+## Integration principals
+
+A machine principal does **not** sit on the role ladder. Its capabilities are its own set, and a role binding cannot escalate one — a binding that names an integration's user id is refused, so you cannot turn an API user into a supervisor by configuration.
+
+Three principals are named, each with a different set. Create an `api_role` user with **exactly** the name:
+
+| Principal | Capabilities | For |
+|---|---|---|
+| `orders-intake` | `view`, `order.intake`, `order.acknowledge`, `order.receipt_confirm` | Receiving orders from a client system |
+| `production-adapter` | `view`, `demand.write_back` | Writing produced quantities back |
+| `external-fulfilment` | `view`, `dispatch.allocate`, `dispatch.ship` | A third party who ships for you |
+
+They are separate deliberately: one set would hand `dispatch.ship` to the order-receiving integration, and posting real stock is not something an order-receiving integration should be able to do.
+
+<Warning>
+A generic API user — one not named as one of the three — holds **no** Orders capabilities at all. `whoami` returns an empty list and every route refuses it. This is the most common reason a machine token appears to be "installed but broken".
+</Warning>
+
+`order.intake` is the one capability off the ladder entirely: no role floor, integration-only. `demand.write_back` is the deliberate exception in the other direction — a supervisor may also write produced quantities back, which keeps the operation testable without a machine in the loop.
+
+## Refusals
+
+A capability refusal is a `403` naming the capability:
+
+```json
+{
+  "error": "forbidden",
+  "message": "\"customer.maintain\" is not available to this caller. integration principal \"apiuser_x\" does not hold this capability; it needs a person or a different principal.",
+  "capability": "customer.maintain"
+}
+```
+
+Some actions refuse a machine principal outright, whatever it holds — an absolute correction needs a person. Those say so in the message rather than naming a capability you could be granted.

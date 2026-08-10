@@ -1,0 +1,81 @@
+---
+title: "Orders Module for Developers"
+sidebarTitle: "Overview"
+description: "Sell goods and ship them: customers, sales orders, dispatches, stock claims, coverage, and the seam into Inventory."
+---
+
+The Orders module sells things. It holds your customers and their delivery addresses, takes and acknowledges sales orders, allocates stock to dispatches, ships them through Inventory, and tells you what you can and cannot cover.
+
+This section is a developer reference. It documents the concepts, the permission model, and every endpoint. The rest of the ERPLite docs are written for business users and administrators; these pages assume you are writing code against the API.
+
+<Note>
+The module runs as a pilot behind an account allowlist. Your account must be enabled for `/bff-service/orders/*` before any of these endpoints will answer — an account that is not enabled receives `403 not_enabled` on every route, including `whoami`. See [Authentication and roles](/orders/auth-and-roles).
+</Note>
+
+## The mental model
+
+Four ideas explain almost everything about how the module behaves.
+
+**A customer order is never refused for want of stock.** Accepting an order is a commercial decision, not a stock one. Nothing in acknowledgement consults inventory. Stock is checked much later, when you allocate units to a dispatch — and that is the only place it can refuse you.
+
+**The order's quantities live in an engine, not in a table you read.** Each order line has a *position* holding what is required, allocated and dispatched. That position is authoritative. The platform columns you can see on `ord_order_line` are a **projection** of it, refreshed after each write and healed by a reconciler. When the two disagree, the engine is right — so read quantities from this module's endpoints, never from the table.
+
+**Status is derived, and you never write it.** An order moves along a state machine, and its coarse status is capped by a **ceiling** the quantities justify. You call an action — acknowledge, release, cancel, short-close — and the module decides the new status. `GET /orders/:orderNo` returns the ceiling and every transition it will and will not allow, each with a reason, so a screen can grey a control *and* explain it.
+
+**Orders never writes stock.** Shipping moves goods, but Orders does not move them. It calls Inventory's issue operation across a seam and Inventory writes the movements. Orders holds the dispatch document and the commitments around it; Inventory holds the ledger. The two agree by message, never by shared tables — Orders writes no `inv_*` table and nothing outside Orders writes an `ord_*` table.
+
+## What the module governs, and what it does not
+
+| Kind | Examples | Where it lives | How you change it |
+|------|----------|----------------|-------------------|
+| **Master data** | Customers, ship-to addresses | Platform tables (`ord_customer`, `ord_ship_to`) | This module's endpoints, or its import pipeline |
+| **Configuration** | Governance policies, the reservation policy | Platform tables (`ord_policy`, `ord_reservation_policy`) | The policy endpoints — admin only |
+| **Documents** | Orders, order lines, dispatches, dispatch lines | Platform tables, changed only through the module | The document endpoints and their action routes |
+| **The position** | Required, allocated and dispatched quantities; claims; the event outbox | The module's own store, not platform tables | Never directly — only as a side effect of an action |
+| **Stock** | Movements and balances | **Inventory**, not here | Ship a dispatch; Inventory writes the movements |
+
+## What you can do with the API
+
+<CardGroup cols={2}>
+  <Card title="Keep customers and addresses" icon="address-book" href="/orders/api/masters">
+    Customers, their ship-to addresses, credit exposure, and the deactivation rules.
+  </Card>
+  <Card title="Take and run orders" icon="file-signature" href="/orders/api/orders">
+    Create, acknowledge, release, amend, cancel, short-close, close — and the intake API.
+  </Card>
+  <Card title="Allocate and ship" icon="truck-ramp-box" href="/orders/api/dispatches">
+    Dispatches, allocation, shipping through Inventory, delivery, cancellation and reversal.
+  </Card>
+  <Card title="Hold stock for an order" icon="lock" href="/orders/api/reservations">
+    The three reservation policies, what a claim is, and how to force one open.
+  </Card>
+  <Card title="Answer what you can cover" icon="magnifying-glass-chart" href="/orders/api/demand-and-coverage">
+    Open demand, the feasibility check, and the coverage view that degrades rather than lies.
+  </Card>
+  <Card title="Report and export" icon="table" href="/orders/api/reports-and-exports">
+    The order queue, on-time delivery, orphaned dispatches, and the accounting hand-off.
+  </Card>
+</CardGroup>
+
+## Where to start
+
+<Steps>
+  <Step title="Check you are switched on">
+    `GET /bff-service/orders/health` answers only for an allowlisted account. `GET /bff-service/orders/whoami` then tells you your role and capabilities.
+  </Step>
+  <Step title="Create a customer and an address">
+    An order needs a customer, and a ship-to address that belongs to **that** customer. See [Masters](/orders/api/masters).
+  </Step>
+  <Step title="Raise an order and ship it">
+    The [order-to-shipment guide](/orders/guides/order-to-shipment) walks the whole loop, including the two refusals most people meet first.
+  </Step>
+  <Step title="Decide your reservation policy">
+    It changes what allocation means. Read [Reservations](/orders/api/reservations) before you pick — the default is deliberately the weakest one.
+  </Step>
+</Steps>
+
+## Two things that surprise people
+
+**`delivery_warehouse` is where goods come *from*.** It is the order's demand warehouse: the warehouse the line's position opens against, what open demand groups by, and where coverage counts stock. It is not the delivery address — that is the ship-to. A dispatch may ship from somewhere else, and the order's demand warehouse does not follow it.
+
+**Quantities move buckets, they do not accumulate.** When a dispatch ships, its units leave `allocated_qty` and arrive in `dispatched_qty`. A line with 400 allocated that ships 400 has `allocated_qty: 0` afterwards, not 400. Every quantity you send is **absolute** — "this line's allocation is now N" — never a delta, so a retry is a no-op rather than a double.

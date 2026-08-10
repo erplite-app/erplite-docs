@@ -1,0 +1,101 @@
+---
+title: "Conventions"
+description: "Base URL, the error envelope, absolute quantities, identifiers, dates, and what is never in a response."
+---
+
+## Base URL
+
+```
+https://api.erplite.app/bff-service/orders
+```
+
+Every path on these pages is relative to it. Responses return their JSON body **directly** — there is no `{ data }` envelope to unwrap.
+
+## Errors
+
+Every refusal uses one shape:
+
+```json
+{
+  "error": "validation_failed",
+  "message": "A dispatch needs at least one line. A dispatch with nothing on it is not a shipment.",
+  "field": "lines"
+}
+```
+
+| Field | When |
+|---|---|
+| `error` | Always. `validation_failed`, `forbidden`, `not_found`, `not_enabled`, `conflict` |
+| `message` | Always. Written to be shown to a person — it says what to do next |
+| `field` | When one field is at fault |
+| `line` | When one line is at fault, 1-based |
+| `capability` | On a `403` from the capability model |
+| `failures` | When several things are wrong at once |
+
+| Status | Meaning |
+|---|---|
+| `400` | Malformed request |
+| `403` | `not_enabled` (account not on the allowlist) or `forbidden` (capability) |
+| `404` | No such order, dispatch, customer or route |
+| `409` | A conflicting concurrent write — read back and retry |
+| `422` | `validation_failed` — the request was understood and refused |
+| `503` | The engine or a seam is unreachable. Safe to retry |
+
+<Note>
+Read the `message`. This module writes refusals as sentences that name the remedy — "Allocate less, dispatch what you have, or wait for stock" — rather than as codes you have to interpret.
+</Note>
+
+## Quantities are absolute
+
+Every quantity you send replaces the current value. `allocated_qty: 100` means *this dispatch line's allocation is now 100*.
+
+```json
+{ "lines": [ { "dispatch_line_uid": "DN-000017-L01", "allocated_qty": 100 } ] }
+```
+
+- Sending the same request twice is a **no-op**, not a double.
+- Reducing is the same call with a smaller number.
+- `0` releases the allocation entirely.
+
+This is why the module needs no idempotency key on allocation: the operation is idempotent by construction.
+
+## Identifiers
+
+| Kind | Example | Notes |
+|---|---|---|
+| Order number | `SO-000042` | Allocated by the module. Never reused |
+| Order line uid | `SO-000042-L01` | Permanent. Survives cancellation and re-ordering |
+| Dispatch number | `DN-000017` | Allocated by the module |
+| Dispatch line uid | `DN-000017-L01` | Permanent |
+| Customer code | `CUST-001` | Yours. The identity — it cannot be renamed |
+| Ship-to code | `CUST-001-SITE` | Yours, unique within the customer |
+
+Address master data by its **business code**, never by a platform record id. An endpoint handed a record id refuses it — `No item with code "rec123"`.
+
+## Dates
+
+Dates in are ISO-8601. Date-only fields (`required_by_date`, `dispatch_date`) are stored as midnight UTC and read back as `YYYY-MM-DD`.
+
+<Warning>
+`dispatch_date` is **overwritten at ship time** with the shipping date. A value set at dispatch creation is a plan; shipping replaces it with what happened. Back-dating a shipment is therefore not possible today — a dispatch shipped now is stamped now.
+</Warning>
+
+## Lists and filters
+
+List endpoints take query parameters and return a named array:
+
+```http
+GET /orders?status=Acknowledged&customer=CUST-001
+```
+
+```json
+{ "orders": [ ... ] }
+```
+
+Exports take `from` and `to` as inclusive date edges, and return CSV.
+
+## What is never in a response
+
+- **A status you can write.** Statuses are derived. Call an action.
+- **A summed claim.** Advisory and enforced claims are labelled and reported separately, and no field adds them together — summing them would over-count the same stock.
+- **A zero standing in for absence.** A component the module could not read comes back marked unavailable and named, never as `0`. A shortfall of zero and "we could not tell" are different answers and never share a representation.

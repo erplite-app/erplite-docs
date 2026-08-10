@@ -1,0 +1,149 @@
+---
+title: "Dispatches"
+description: "Create a dispatch, allocate stock to it, ship it through Inventory, record delivery, cancel and reverse."
+---
+
+A dispatch is the shipment document. It holds lines, each pointing at an order line, and it is the only thing that moves stock.
+
+## Create
+
+```http
+POST /dispatches       → dispatch.allocate
+```
+
+```json
+{
+  "source_warehouse": "WH-MAIN",
+  "dispatch_date": "2026-08-09",
+  "lines": [
+    { "order_line_uid": "SO-000042-L01", "item_code": "SKU-001" }
+  ]
+}
+```
+
+A dispatch needs at least one line — "a dispatch with nothing on it is not a shipment". Each line names the order line it exists for; a line with no demand behind it cannot be created.
+
+It comes back at `Packed`, with dispatch and line uids allocated. **No stock is claimed yet** — creating a dispatch is a form somebody started filling in, which is why it gates on `dispatch.allocate` rather than a capability of its own.
+
+## Allocate
+
+```http
+POST /dispatches/:dispatchNo/allocate                              → dispatch.allocate
+POST /dispatches/:dispatchNo/lines/:dispatchLineUid/release        → dispatch.allocate
+```
+
+```json
+{ "lines": [ { "dispatch_line_uid": "DN-000017-L01", "allocated_qty": 100 } ] }
+```
+
+This is where stock is checked, and the only place the module refuses you for want of it. Three gates run in order:
+
+| Gate | Refuses when |
+|---|---|
+| **1** | The order or line is cancelled, short-closed or otherwise closed |
+| **2** | The request exceeds what the line still has outstanding |
+| **3** | Stock is short at the grain — or the stock seam is unreachable |
+
+Gate 3 names the numbers:
+
+```
+SKU-001 at WH-MAIN has 78 available and line SO-000042-L01 needs 100 — short by 22.
+Allocate less, dispatch what you have, or wait for stock.
+```
+
+<Note>
+Gate 3 checks the quantity being **added**, not the absolute figure — so reducing an allocation, or re-sending the one you already hold, asks Inventory nothing. An absent stock seam is refused, never allowed by default.
+</Note>
+
+The quantity is absolute. Send `0` to release. Releasing is the same route with a smaller number, or the dedicated release route for one line.
+
+## Ship
+
+```http
+POST /dispatches/:dispatchNo/ship      → dispatch.ship
+```
+
+This posts stock. Its response tells you what happened, in detail:
+
+```json
+{
+  "dispatch_no": "DN-000017",
+  "inv_issue_doc_no": "ord-ship-DN-000017",
+  "posted": true,
+  "lines": [ { "dispatch_line_uid": "DN-000017-L01", "line_uid": "SO-000042-L01", "shipped_qty": 100 } ],
+  "resumed": false,
+  "shipped_at": "2026-08-09T12:59:28.673Z",
+  "projections": { "written": ["dispatch", "DN-000017-L01", "SO-000042-L01"], "failed": [] },
+  "orders_dispatched": ["SO-000042"]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `posted` | Whether **this call** moved the stock. `false` means Inventory replayed an earlier posting — still a success |
+| `resumed` | This caller picked up an attempt another caller had left in flight |
+| `projections` | Which display columns were written, and which failed. A failure here is a stale column, never a lost shipment |
+| `orders_dispatched` | Orders this shipment completed, raised to `Dispatched` |
+
+What it will refuse:
+
+- Every line holding nothing — there is nothing to ship
+- A line asked to ship more than it holds
+- A batch-tracked item with no batch, naming the line
+
+Shipping **less** than allocated is allowed. The unshipped remainder is dropped, not carried: after shipping, `allocated_qty` on that line is zero and the units that went are in `dispatched_qty`.
+
+<Note>
+Retrying a shipment you did not see the response to is safe. The module records a ship attempt under a unique index **before** calling Inventory, freezes the line array on it, and re-sends that array unchanged — so a retry posts to identical movement keys and Inventory replays rather than double-posting.
+</Note>
+
+## Deliver and reverse
+
+```http
+POST /dispatches/:dispatchNo/deliver     → order.receipt_confirm
+POST /dispatches/:dispatchNo/reverse     → dispatch.reverse
+```
+
+**Deliver** stamps `delivered_at` and the route it came by. It posts nothing — the goods already left.
+
+**Reverse** corrects a mistake: it asks Inventory to compensate the movements and takes `dispatched_qty` back down. Supervisor only, and it needs a reason.
+
+- It uses a **different** idempotency key from the issue, which Inventory requires
+- It is refused once the buyer has confirmed receipt
+- It is refused outside the account's reversal window
+- It is refused if Inventory is unreachable, and records nothing
+
+<Warning>
+Reversal is a correction, not a return. It does not take goods back from a customer, and it is not the mechanism for a return — returns are out of v1 entirely.
+</Warning>
+
+## Cancel
+
+```http
+POST /dispatches/:dispatchNo/cancel      → dispatch.cancel
+```
+
+Releases every line's allocation and moves no stock. Shipped units are left standing — this is a cancellation, not a return — and every allocation entry is kept, so nothing shipped is lost.
+
+It is **refused while a posting attempt is on record**, including one stuck mid-flight, because cancelling on top of a shipment that may have posted is how stock goes missing. Once the sweeper abandons a stranded attempt, the cancellation is allowed. The refusal says which, so an operator does not read it as a bug.
+
+## The dispatch document
+
+```http
+POST /dispatches/:dispatchNo/document    → dispatch.ship
+```
+
+Generates the dispatch note from the dispatch's own data. It needs no uploaded invoice file, and **it never gates the shipment**: a failure is recorded where a person can find it and returns `shipment_unaffected: true`, rather than throwing after the goods have gone.
+
+```json
+{ "dispatch_no": "DN-000017", "generated": false,
+  "failure": "The document could not be produced: …. It can be raised again; the dispatch has shipped and is unaffected.",
+  "shipment_unaffected": true }
+```
+
+## Read
+
+```http
+GET /dispatches                  → view
+GET /dispatches/:dispatchNo      → view
+```

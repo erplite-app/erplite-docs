@@ -1,0 +1,132 @@
+---
+title: "Concepts"
+description: "The order lifecycle, the quantity model, positions and projections, claims, and the Inventory seam."
+---
+
+Everything in the API follows from six ideas. They are worth reading once before you write against it, because several of them are the opposite of what an order module usually does.
+
+## 1. The order lifecycle
+
+An order moves through eight coarse statuses:
+
+```
+Received → Acknowledged → In_Production → Ready → Dispatched → Delivered → Closed
+                                                      ↘ Cancelled
+```
+
+You never write a status. You call an action and the module decides:
+
+| Action | Moves | Notes |
+|---|---|---|
+| `POST /orders/:orderNo/acknowledge` | `Received → Acknowledged` | Locks the fields listed in the account's policy |
+| `POST /orders/:orderNo/release` | `Acknowledged → In_Production` | Needs authorisation alone — no quantity is consulted |
+| *(automatic)* | `Ready → Dispatched` | Raised inside shipping, when the last line completes |
+| `POST /orders/:orderNo/delivered` | `Dispatched → Delivered` | |
+| `POST /orders/:orderNo/close` | `Delivered → Closed` | |
+| `POST /orders/:orderNo/cancel` | → `Cancelled` | Sets `cancelled_qty`; never edits `ordered_qty` |
+
+### The ceiling
+
+The coarse status is capped by what the quantities justify. An order whose lines have shipped nothing cannot be `Delivered`, whatever you ask for.
+
+`GET /orders/:orderNo` returns this directly:
+
+```json
+{
+  "order_no": "SO-000042",
+  "order_status": "Acknowledged",
+  "ceiling": "In_Production",
+  "transitions": [
+    { "to": "In_Production", "allowed": true,  "reason": "..." },
+    { "to": "Delivered", "allowed": false, "blocking_lines": [1, 3],
+      "reason": "An order at Acknowledged cannot move to Delivered." }
+  ]
+}
+```
+
+Use `transitions` to drive your UI. It tells you which controls to offer *and* why the others are refused, which means you never have to re-implement the state machine.
+
+## 2. The quantity model
+
+Every line carries five quantities, and they never double-count:
+
+| Field | Meaning |
+|---|---|
+| `ordered_qty` | What the customer asked for. Never edited — a reduction sets `cancelled_qty` |
+| `cancelled_qty` | Withdrawn. `required = ordered − cancelled + returned` |
+| `produced_qty` | Made against the line, written back by Production |
+| `allocated_qty` | Committed to a dispatch and **not yet shipped** |
+| `dispatched_qty` | Gone. Left the building |
+
+Two derived numbers come from these and are recomputed on every read:
+
+```
+pending_production = max(0, required − produced)
+pending_dispatch   = max(0, required − dispatched − allocated)
+```
+
+<Warning>
+`allocated_qty` and `dispatched_qty` are **buckets, not totals**. Shipping moves units from the first to the second. A line with 400 allocated that ships all 400 reads `allocated_qty: 0, dispatched_qty: 400`. Adding them together to get "committed" double-counts nothing — but treating `allocated_qty` as a running total does.
+</Warning>
+
+Every quantity you send is **absolute**. `allocated_qty: 100` means "this dispatch line's allocation is now 100", not "add 100". So a retry you did not see the response to is a no-op, and a reduction is the same call with a smaller number. Zero releases the allocation.
+
+## 3. Positions and projections
+
+The authoritative quantities live in the module's own store, in a **line position** keyed by `line_uid`. The columns on `ord_order_line` are a projection of it.
+
+That matters in three ways:
+
+- **Read quantities from this module's endpoints.** A direct table read can be stale.
+- **The projection is repaired, not trusted.** `POST /maintenance/reconcile-projections` reports every column that disagrees and heals it toward the engine. It never heals the other way.
+- **A stale column is a display bug, never a lost shipment.** If a projection write fails after a successful ship, the response says so in `projections.failed` and the stock has still moved.
+
+## 4. The permanent line address
+
+Each order line has a `line_uid` — `SO-000042-L01` — allocated once and never reused. It survives cancellation, re-ordering and amendment. Dispatch lines have the same idea: `DN-000017-L01`.
+
+Use it as your foreign key. Line *numbers* can shift; uids cannot.
+
+## 5. Claims, and the three reservation policies
+
+A **claim** records that units of a grain (item × warehouse) are spoken for by a dispatch line. What a claim *does* depends on the account's reservation policy:
+
+| Policy | What a claim means | Available today |
+|---|---|---|
+| `none` | Nothing is held. Two orders may allocate the same stock; the second shipment is refused at posting | **Yes** — the default |
+| `advisory` | Orders records the claim and warns you, but Inventory does not defend it | **Yes** |
+| `enforced` | Inventory holds the stock and refuses another module's posting | **No** — refused at configuration time |
+
+A claim is **derived**, not triggered. It is a projection of the allocation entry, recomputed on every write to the position, so it cannot outlive the thing it was held for. Reducing an allocation to zero releases the claim; it is never left as a zero-quantity row.
+
+See [Reservations](/orders/api/reservations) for the full picture, including what `enforced` is waiting on.
+
+## 6. The Inventory seam
+
+Orders never writes stock. Shipping calls Inventory's issue operation, and Inventory writes the movements.
+
+The interesting part is what happens when that call fails halfway:
+
+<Steps>
+  <Step title="A ship attempt is recorded first">
+    Under a unique index in Orders' own store, **before** Inventory is called. A second caller loses that race and never reaches Inventory at all.
+  </Step>
+  <Step title="The line array is frozen">
+    Stored on the attempt before the call and re-sent unchanged on a retry. Inventory derives each movement key from the array's order, so a recomputed array would be refused as key reuse.
+  </Step>
+  <Step title="A crash is repairable">
+    If the process dies between Inventory's commit and Orders' write, `POST /maintenance/sweep-ship-attempts` asks Inventory for the receipt under the stored key and either completes the record or abandons the attempt.
+  </Step>
+</Steps>
+
+<Note>
+The idempotency key is **never used as a lock**. Concurrency control is the ship-attempt index race, in Orders' own read-your-writes store. Inventory answering `applied: false` means "already posted, carry on" — it is a legitimate retry's answer, not a conflict.
+</Note>
+
+## What the module deliberately does not do
+
+- **Promise a delivery date.** The date is an input. There is a feasibility *check*, and it never proposes, fills or refuses a date.
+- **Gate on the credit limit.** The limit and the open unshipped value are shown beside each other and compared nowhere.
+- **Return goods.** Returns, credit notes and refunds are out of v1. A shipped dispatch can be *reversed* — a correction of a mistake — but nothing takes goods back.
+- **Allocate automatically.** Deciding which order gets scarce stock needs a priority model that no document specifies.
+- **Send notifications.** Nothing emails anybody in v1. A failure is recorded where a person can find it instead.

@@ -1,0 +1,150 @@
+---
+title: "Orders"
+description: "Create, acknowledge, release, amend, cancel, short-close and close — plus the intake API for machines."
+---
+
+## Read
+
+```http
+GET /orders                → view
+GET /orders/:orderNo       → view
+```
+
+The list takes `status`, `customer` and date filters. The detail returns the order, its lines, the **ceiling** and every **transition** with a reason — use those to drive a UI rather than re-implementing the state machine.
+
+```json
+{
+  "order_no": "SO-000042",
+  "order_status": "Acknowledged",
+  "customer": { "customer_code": "CUST-001", "customer_name": "Noice" },
+  "delivery_warehouse": "WH-MAIN",
+  "required_by_date": "2026-08-20",
+  "lines": [
+    { "line_uid": "SO-000042-L01", "item_code": "SKU-001",
+      "required_qty": 500, "produced_qty": 100,
+      "allocated_qty": 0, "dispatched_qty": 18, "line_status": "open" }
+  ],
+  "ceiling": "In_Production",
+  "transitions": [ { "to": "Delivered", "allowed": false, "reason": "..." } ]
+}
+```
+
+## Create
+
+```http
+POST /orders               → order.draft
+```
+
+```json
+{
+  "customer_code": "CUST-001",
+  "ship_to_code": "CUST-001-SITE",
+  "delivery_warehouse": "WH-MAIN",
+  "required_by_date": "2026-08-20",
+  "customer_po_ref": "PO-99001",
+  "lines": [
+    { "item_code": "SKU-001", "entered_qty": 300, "ordered_uom": "KG", "unit_price": 10 }
+  ]
+}
+```
+
+The order comes back at `Received` with its number and line uids allocated.
+
+Three refusals you will meet early, all of them deliberate:
+
+| Refusal | Why |
+|---|---|
+| *Ship-to "X" belongs to a different customer* | An address is only valid for the customer it was created under |
+| *No unit of measure with code "X" … It is not accepted as base units* | An unresolvable unit fails closed rather than being guessed |
+| *No item with code "X"* | Items are Inventory's; the code must resolve |
+
+**Stock is not checked here.** An order for more than you have is accepted — that is the point.
+
+### Add a line later
+
+```http
+POST /orders/:orderNo/lines    → order.draft
+```
+
+## Move it along
+
+```http
+POST /orders/:orderNo/acknowledge     → order.acknowledge
+POST /orders/:orderNo/release         → order.acknowledge
+POST /orders/:orderNo/delivered       → order.receipt_confirm
+POST /orders/:orderNo/buyer-receipt   → order.receipt_confirm
+POST /orders/:orderNo/close           → order.receipt_confirm
+```
+
+**Acknowledge** locks the fields the account's policy names — customer, ship-to, item, quantity, price and so on — and snapshots the reservation policy each line will use. The response carries the locked list and the snapshot.
+
+**Release** moves `Acknowledged → In_Production` on **authorisation alone**. No quantity is consulted, which is what lets the first work order be created against an order that has produced nothing.
+
+`Ready → Dispatched` is raised **inside shipping** when the last line completes. There is no route for it.
+
+## Amend
+
+```http
+POST /orders/:orderNo/amend                             → order.draft
+POST /orders/:orderNo/lines/:lineUid/override-floor     → order.amend_locked
+```
+
+An amendment is audited: it records who, when, why, and the before and after of every field. Amending a field the acknowledgement locked needs `order.amend_locked` (supervisor) and a reason.
+
+## Cancel
+
+```http
+POST /orders/:orderNo/cancel                    → order.draft
+POST /orders/:orderNo/lines/:lineUid/cancel     → order.draft
+```
+
+Cancellation sets `cancelled_qty` — it never edits `ordered_qty`, so the original demand stays legible. `required_qty` falls, claims are released, and the demand is withdrawn in the engine so the position and the projection agree. Repeating it changes nothing.
+
+<Warning>
+**Cancelling after shipping is allowed by default**, and creates an *orphan*: goods have left and nobody is paying for them. The module cannot resolve that — returns do not exist — so it refuses to hide it instead, and the [orphaned-dispatch report](/orders/api/reports-and-exports) lists every one.
+
+An account that wants the old strictness sets the `cancel_after_ship` policy to `refuse`.
+</Warning>
+
+## Short-close
+
+```http
+POST /orders/:orderNo/lines/:lineUid/short-close    → line.short_close
+```
+
+Supervisor only, with a reason. Closes a line that will never be fully delivered, releasing what it held. Short-closed is a header state — the line stops counting as open demand.
+
+## Terminal override
+
+```http
+POST /orders/:orderNo/terminal-override    → policy.override
+```
+
+Supervisor. Moves an order out of a terminal status where the ordinary ladder will not. Recorded as a high-risk action.
+
+## The intake API
+
+```http
+POST /orders/intake     → order.intake (or order.draft)
+```
+
+For a machine posting orders in. Same behaviour as `POST /orders`, with two additions: `source_system` and `external_order_key` are recorded on the order, and the key makes the call **idempotent**.
+
+```json
+{
+  "source_system": "acme-erp",
+  "external_order_key": "PO-99001",
+  "customer_code": "CUST-001",
+  "lines": [ { "item_code": "SKU-001", "entered_qty": 300, "ordered_uom": "KG" } ]
+}
+```
+
+| Re-send | Result |
+|---|---|
+| Same key, same payload | The existing order, unchanged. No second order |
+| Same key, changed payload | An **amendment** on the existing order — never a duplicate |
+| Same key, still in flight | Reported in flight, never as a completed order |
+| Same key, earlier attempt failed | Retried and completed. A failed create never blocks its key |
+| Different source system, same key | A different order. Keys are scoped to their source |
+
+A line-level validation failure leaves **no order created at all** — the whole send is refused, not half-applied.

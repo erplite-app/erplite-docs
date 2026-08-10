@@ -1,0 +1,208 @@
+# ERPLite Orders Module — API Reference for LLMs
+
+> Sell goods and ship them. Customers, sales orders, dispatches, stock claims,
+> coverage, and the seam into Inventory. Served by the BFF at
+> `/bff-service/orders`. Every request is account-scoped by the bearer token.
+
+## Access
+
+- Pilot module behind an ACCOUNT ALLOWLIST. An account not on it gets
+  `403 not_enabled` on EVERY route including `/health` and `/whoami`.
+- Installing and enabling are different. A fully installed account still answers
+  `not_enabled` until it is added to the allowlist.
+- Capabilities come from ROLE BINDINGS, not the platform role. An account with no
+  bindings grants nobody anything.
+- Roles form a ladder: viewer -> operator -> supervisor -> admin. Highest wins,
+  cumulative.
+- A machine principal is NOT on the ladder and CANNOT be escalated by a binding.
+  Only three named principals hold anything:
+    orders-intake       view, order.intake, order.acknowledge, order.receipt_confirm
+    production-adapter  view, demand.write_back
+    external-fulfilment view, dispatch.allocate, dispatch.ship
+  A generic api user holds NOTHING.
+
+## Capability floors
+
+viewer:     view
+operator:   export, customer.maintain, order.draft, order.acknowledge,
+            order.receipt_confirm, order.cancel, dispatch.allocate,
+            dispatch.ship, dispatch.cancel
+supervisor: order.amend_locked, line.short_close, dispatch.reverse,
+            claim.force_release, claim.override, claim.over_claim,
+            master.deactivate, maintenance.reconcile, policy.override,
+            import.commit, demand.write_back
+admin:      config.manage
+integration-only: order.intake
+
+NOTE: `export` is floored at OPERATOR, not viewer (settled to match Purchase).
+
+## Core model
+
+- A customer order is NEVER refused for want of stock. Stock is checked only at
+  ALLOCATION (gate 3).
+- Quantities live in an engine POSITION keyed by `line_uid`. The columns on
+  `ord_order_line` are a PROJECTION. When they disagree the engine is right.
+- Status is DERIVED and capped by a CEILING. You never write a status; you call
+  an action. `GET /orders/:orderNo` returns `ceiling` and `transitions[]` with a
+  reason for each refusal.
+- Quantities are ABSOLUTE, never deltas. `allocated_qty: 100` means "is now 100".
+  Retry = no-op. `0` releases.
+- allocated_qty and dispatched_qty are BUCKETS. Shipping moves units from the
+  first to the second; after a full ship allocated_qty is 0.
+- Orders writes NO `inv_*` table; nothing outside Orders writes an `ord_*` table.
+- required = ordered - cancelled + returned
+  pending_production = max(0, required - produced)
+  pending_dispatch   = max(0, required - dispatched - allocated)
+  open demand        = required - dispatched   (allocated is still owed)
+
+## Identifiers
+
+SO-000042 (order), SO-000042-L01 (order line, permanent), DN-000017 (dispatch),
+DN-000017-L01 (dispatch line, permanent). Master data is addressed by BUSINESS
+CODE, never a platform record id.
+
+## Routes (63)
+
+### Identity
+GET  /health                                      -
+GET  /whoami                                      -
+
+### Orders
+GET  /orders                                      view
+GET  /orders/:orderNo                             view
+POST /orders                                      order.draft
+POST /orders/:orderNo/lines                       order.draft
+POST /orders/intake                               order.intake OR order.draft
+POST /orders/:orderNo/acknowledge                 order.acknowledge
+POST /orders/:orderNo/release                     order.acknowledge
+POST /orders/:orderNo/delivered                   order.receipt_confirm
+POST /orders/:orderNo/buyer-receipt               order.receipt_confirm
+POST /orders/:orderNo/close                       order.receipt_confirm
+POST /orders/:orderNo/amend                       order.draft
+POST /orders/:orderNo/cancel                      order.draft
+POST /orders/:orderNo/lines/:lineUid/cancel       order.draft
+POST /orders/:orderNo/lines/:lineUid/short-close  line.short_close
+POST /orders/:orderNo/lines/:lineUid/override-floor  order.amend_locked
+POST /orders/:orderNo/terminal-override           policy.override
+POST /orders/lines/:lineUid/production-quantities demand.write_back
+
+### Customers and ship-tos
+GET   /customers                                        view
+GET   /customers/:code                                  view
+GET   /customers/:code/exposure                         view
+POST  /customers                                        customer.maintain
+PATCH /customers/:code                                  customer.maintain
+POST  /customers/:code/deactivate                       customer.maintain
+POST  /customers/:code/reactivate                       customer.maintain
+GET   /customers/:code/ship-tos                         view
+GET   /customers/:code/ship-tos/:shipTo                 view
+POST  /customers/:code/ship-tos                         customer.maintain
+PATCH /customers/:code/ship-tos/:shipTo                 customer.maintain
+POST  /customers/:code/ship-tos/:shipTo/deactivate      customer.maintain
+POST  /customers/:code/ship-tos/:shipTo/reactivate      customer.maintain
+
+### Dispatches
+GET  /dispatches                                             view
+GET  /dispatches/:dispatchNo                                 view
+POST /dispatches                                             dispatch.allocate
+POST /dispatches/:dispatchNo/allocate                        dispatch.allocate
+POST /dispatches/:dispatchNo/lines/:dispatchLineUid/release   dispatch.allocate
+POST /dispatches/:dispatchNo/ship                            dispatch.ship
+POST /dispatches/:dispatchNo/document                        dispatch.ship
+POST /dispatches/:dispatchNo/deliver                         order.receipt_confirm
+POST /dispatches/:dispatchNo/cancel                          dispatch.cancel
+POST /dispatches/:dispatchNo/reverse                         dispatch.reverse
+
+### Reservations and claims
+GET  /reservation-policies                        config.manage
+PUT  /reservation-policies                        config.manage
+GET  /claims                                      view
+POST /claims/:dispatchLineUid/force-release       claim.force_release
+
+### Reads for other modules
+GET /open-demand                                  view
+GET /demand                                       view
+GET /demand/:lineUid                              view
+GET /feasibility                                  view
+GET /coverage                                     view
+
+### Reports and exports
+GET /reports/order-queue                          view
+GET /reports/on-time-delivery                     view
+GET /reports/orphaned-dispatches                  view
+GET /failures                                     view
+GET /exports/order                                export
+GET /exports/dispatch                             export
+GET /exports/:entity                              export
+POST /imports/:entity                             import.commit
+
+### Policies and maintenance
+PUT  /policies/:key                               config.manage
+POST /maintenance/reconcile-projections           maintenance.reconcile
+POST /maintenance/sweep-ship-attempts             maintenance.reconcile
+POST /maintenance/sweep-intake-receipts           maintenance.reconcile
+
+## Reservation policies
+
+none      (default) no claim taken; a competing allocation succeeds; the second
+          SHIPMENT is refused by the negative-stock floor at posting
+advisory  claim recorded and warned about; Inventory does NOT defend it; every
+          screen must label the number advisory
+enforced  NOT AVAILABLE. The policy write refuses it and names the three missing
+          Inventory prerequisites. It does NOT silently downgrade to advisory.
+
+A claim is DERIVED from the allocation entry, recomputed on every position write,
+so it cannot outlive what it was held for. Reducing to zero RELEASES it.
+NEVER sum advisory and enforced claims — the response has no field for a total
+on purpose.
+
+## Governance policy keys (PUT /policies/:key, admin, reason MANDATORY)
+
+locked_fields_after_ack, cancel_after_ship (allow|refuse, default allow),
+short_close_authority, reversal_window_hours, status_map,
+acknowledgement_required
+
+Seeded by the installer, then owned by the account — a re-install leaves a
+changed row alone rather than reverting it.
+
+## Events (10, closed set, appended INSIDE the state change's transaction)
+
+orders.order.received, orders.order.status_changed, orders.order.amended,
+orders.order.cancelled, orders.dispatch.allocated, orders.dispatch.shipped,
+orders.dispatch.cancelled, orders.dispatch.reversed, orders.claim.changed,
+orders.policy.changed
+
+DELIVERY IS NOT LIVE. Outbox rows are written, ordered and verifiable; nothing
+subscribes yet. `orders.dispatch.allocated` and `orders.claim.changed` carry the
+ACTOR and the PREVIOUS quantity — the entry keeps only the after, so the pair is
+the audit trail.
+
+## Errors
+
+{ error, message, field?, line?, capability?, failures? }
+400 malformed | 403 not_enabled or forbidden | 404 not found |
+409 concurrent write | 422 validation_failed | 503 engine/seam unreachable
+
+Read the `message` — refusals name the remedy.
+
+## Things that trip people up
+
+- `delivery_warehouse` is where goods come FROM (the demand warehouse), not the
+  delivery address. The ship-to is the destination.
+- A ship-to is only valid for the customer it was created under.
+- `comms_preference` is REQUIRED on a customer and has NO DEFAULT.
+- The customer status field is `status` ("active"/"inactive"), not a boolean.
+- Ship-to fields are `address_line_1`, `address_line_2`, `postal_code`.
+- Export paths are SINGULAR: /exports/order, /exports/dispatch.
+- `dispatch_date` is OVERWRITTEN at ship time with the shipping date.
+- Coverage `unknown` is NOT a shortfall of zero; render it "could not tell".
+- An unavailable feasibility component has NO qty field — it cannot read as 0.
+- Reconcilers REPORT by default; pass ?commit=true to write.
+- The idempotency key is never a lock; concurrency control is the ship-attempt
+  index race. Inventory's `applied: false` means "already posted, carry on".
+
+## Not in v1
+
+Returns/credit notes/refunds; invoices and receivables; credit limit as a gate
+(shown, never enforced); a system-computed delivery date; automatic allocation;
+notifications of any kind; multi-currency; any direct write to a stock table.

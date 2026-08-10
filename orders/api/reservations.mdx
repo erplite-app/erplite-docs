@@ -1,0 +1,106 @@
+---
+title: "Reservations and claims"
+description: "The three reservation policies, what a claim is, reading claims, and forcing one open."
+---
+
+## The three policies
+
+A **claim** records that units of a grain — item × warehouse — are spoken for by a dispatch line. What that claim *does* depends entirely on the account's reservation policy.
+
+| Policy | Allocation | A competing allocation | Available |
+|---|---|---|---|
+| `none` | Takes no claim | Succeeds. The second **shipment** is refused by the negative-stock floor at posting | **Yes**, the default |
+| `advisory` | Records a claim | Succeeds, with a shortfall warning naming the competing claim | **Yes** |
+| `enforced` | Holds the stock in Inventory | **Refused**, stating available, requested and shortfall | **No** |
+
+<Warning>
+**`enforced` cannot be selected.** The policy write refuses it and names why: it needs the Inventory reservation operation, the posting path refusing anything that would drive on-hand below reserved, and the commitments-tracked flag. Until all three exist, `enforced` would refuse a competing claim and nothing else — which is what `advisory` already gives.
+
+The refusal writes nothing. It does **not** silently downgrade you to `advisory`.
+</Warning>
+
+Under `advisory`, every screen must label the number as advisory. The stock is not actually held, and presenting it as though it were is the failure the labelling exists to prevent.
+
+## Reading the policy
+
+```http
+GET /reservation-policies      → config.manage
+PUT /reservation-policies      → config.manage
+```
+
+A policy has a **scope**: `account`, `warehouse` or `material_role`. One scope holds one policy.
+
+```json
+{
+  "scope_type": "warehouse",
+  "scope_ref": "WH-MAIN",
+  "policy_name": "advisory",
+  "params": {},
+  "reason": "Switching the main warehouse to advisory ahead of the pilot."
+}
+```
+
+A reason is **mandatory** and checked before anything else, so a nonsense request with no reason is refused for the reason, not for the nonsense.
+
+If two active policies somehow exist at one scope, the write refuses and **names both rows** rather than picking one — the platform's uniqueness is a search-then-write that can lose a race, so that state is reachable.
+
+### When no policy exists
+
+The resolver falls back to `none` and says so. Allocation and shipping continue, new allocations take no claim, and **existing claims are still held and still shown**. The account is labelled as having no active reservation policy. Nothing is blocked, and no screen calls the stock unreserved while a claim exists.
+
+## Reading claims
+
+```http
+GET /claims        → view
+```
+
+Filter by `item` and `warehouse`.
+
+```json
+{
+  "grains": [
+    {
+      "item_code": "SKU-001",
+      "warehouse": "WH-MAIN",
+      "policy_state": { "state": "active", "policy": "advisory" },
+      "claims": [
+        { "dispatch_line_uid": "DN-000017-L01", "dispatch_no": "DN-000017",
+          "order_no": "SO-000042", "line_uid": "SO-000042-L01",
+          "qty": 100, "policy": "advisory", "actor": "user:ul3byh",
+          "taken_at": "2026-08-09T10:00:00.000Z" }
+      ]
+    }
+  ]
+}
+```
+
+Only **held** claims are returned. A released one is history, not a commitment.
+
+<Warning>
+**There is no field summing advisory and enforced claims, and you must not compute one.** The two mean different things — one is a note, the other is stock actually held — and adding them counts the same units twice under two different guarantees. The response has nowhere to put a total, deliberately.
+</Warning>
+
+An empty set under `none` and an empty set under `advisory` say different things, and the `policy_state` distinguishes them. Under `none` there is genuinely nothing to ask; that is not the same as "nothing is claimed".
+
+## Force a claim open
+
+```http
+POST /claims/:dispatchLineUid/force-release     → claim.force_release
+```
+
+Supervisor, with a reason. For a claim left orphaned by a defect — stock held for something that no longer exists.
+
+It releases the claim **and** its allocation, and says which. It records the operator's reason rather than the machine's, and it never un-ships anything: shipped units are left exactly where they are.
+
+A second call reports that it released nothing and does not throw.
+
+## How a claim stays honest
+
+A claim is **derived**, not triggered. It is recomputed from the allocation entry on every write to the line's position, so:
+
+- Reducing an allocation to zero **releases** the claim rather than leaving a zero-quantity row
+- A short shipment leaves nothing claimed — the unshipped remainder is dropped, not held
+- Deleting or cancelling a dispatch line leaves no claim behind
+- A claim can never outlive the thing it was held for, because nothing has to remember to release it
+
+The invariant is asserted after every act, not maintained by a list of triggers somebody has to keep complete.

@@ -1,0 +1,88 @@
+---
+title: "Admin and maintenance"
+description: "Health, whoami, the three reconcilers, and what to run when something looks wrong."
+---
+
+## Health and identity
+
+```http
+GET /health        → no capability
+GET /whoami        → no capability
+```
+
+Both still require the account to be on the allowlist. `health` answers liveness and version; `whoami` returns your identity, role and capabilities.
+
+`whoami` is the right thing to gate a UI on. The server enforces every capability on every write regardless.
+
+## The reconcilers
+
+Three, each repairing a different thing. All need `maintenance.reconcile` — supervisor.
+
+```http
+POST /maintenance/reconcile-projections     → maintenance.reconcile
+POST /maintenance/sweep-ship-attempts       → maintenance.reconcile
+POST /maintenance/sweep-intake-receipts     → maintenance.reconcile
+```
+
+<Warning>
+**They report by default and write only when asked.** Pass `?commit=true` to apply. A bare call is a dry run — the right first thing to do on a live account.
+</Warning>
+
+### The projection healer
+
+Heals the display columns on `ord_order_line` toward the engine.
+
+```json
+{ "examined": 149, "agreed": 132,
+  "disagreements": [ { "line_uid": "SO-000042-L01", "field": "allocated_qty", "projection": 60, "engine": 0 } ],
+  "healed": [], "failed": [], "reportOnly": true,
+  "summary": "Projection reconciler (REPORT ONLY, nothing written): examined 149 …" }
+```
+
+It **only ever heals toward the engine**. The engine is authoritative and the column is a projection; healing the other way would overwrite the truth with its own shadow.
+
+`disagreements` is kept even after healing, so you can say how often the projection tears rather than only that it was fixed.
+
+### The ship-attempt sweeper
+
+Resolves a shipment left mid-flight — the process died between Inventory's commit and Orders' write.
+
+It asks Inventory for the receipt **under the stored key**, never a freshly built one, and then either completes the record or abandons the attempt. Abandoning is what unblocks a dispatch cancellation that was refused while the attempt stood.
+
+It also makes a second pass for stranded **reversals**, and reports whether that pass ran at all — an empty list with `reversalsChecked: false` means it could not look, which is a different statement from all-clear.
+
+### The intake-receipt sweeper
+
+Completes or abandons an intake receipt left `pending`: the key was claimed, then the order write was lost. Completing frees the order; abandoning frees the **key**, so the sender can retry rather than being blocked for ever behind an order nobody wrote.
+
+### Running them together
+
+They are independent. Each heals only its own damage and leaves the others' evidence alone, running them twice changes nothing, and any order gives the same result.
+
+<Note>
+A fourth reconciler exists in the design and **not** in v1: the enforced-claim reconciler, which belongs with `enforced` reservation. Three is the complete set today, and that is a deliberate statement rather than an oversight.
+</Note>
+
+## When something looks wrong
+
+| Symptom | What to run |
+|---|---|
+| A quantity on screen disagrees with the API | `reconcile-projections` — report first |
+| A dispatch cannot be cancelled, "attempt on record" | `sweep-ship-attempts` |
+| An intake key is blocked and no order exists | `sweep-intake-receipts` |
+| A document did not generate | `GET /failures` — it is recorded there for retry |
+| Everything returns 403 `not_enabled` | The account is not on the allowlist |
+| Everything returns 403 with an empty capability list | A generic API user. See [Authentication and roles](/orders/auth-and-roles) |
+
+## Install and verify
+
+Installing is a CLI operation, not an API call:
+
+```bash
+ts-node src/orders/install/cli.ts --account <accountId> --token-env ORDERS_TOKEN
+ts-node src/orders/install/cli.ts --account <accountId> --token-env ORDERS_TOKEN --verify-only
+```
+
+`--verify-only` never writes and is safe against a live account. A re-install writes nothing when nothing has drifted, and the verifier catches a field that has been removed underneath you.
+
+The installer also names three integration principals to create, and reports policy rows the account has taken ownership of rather than reverting them.

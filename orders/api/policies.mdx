@@ -1,0 +1,61 @@
+---
+title: "Policies"
+description: "The six governance keys, what each does, and the rules that make a policy change safe."
+---
+
+Policies are how an account changes the module's behaviour without a deploy. All of them need `config.manage` — **admin**.
+
+```http
+PUT /policies/:key      → config.manage
+```
+
+```json
+{ "value": "refuse", "reason": "Finance wants the old strictness back for Q3." }
+```
+
+A **reason is mandatory** on every policy write, and it is checked before the key and the value are. Ask for a nonsense key with no reason and you are told about the reason, because that is the field you must fix first.
+
+## The six governance keys
+
+| Key | What it controls |
+|---|---|
+| `locked_fields_after_ack` | Which fields acknowledgement freezes. Changing one afterwards needs `order.amend_locked` |
+| `cancel_after_ship` | `allow` (default) or `refuse`. Whether an order may be cancelled once goods have gone |
+| `short_close_authority` | Which module role may short-close a line |
+| `reversal_window_hours` | How long after delivery a shipment may still be reversed |
+| `status_map` | Per-integration mapping from internal status to the external one a client hears |
+| `acknowledgement_required` | Whether an order must be acknowledged before it can be released |
+
+Read them through the platform table `ord_policy`, or see them applied in the responses that use them — acknowledgement returns the locked list it applied, and a reversal refusal names the window it was outside.
+
+### `cancel_after_ship`
+
+The default changed deliberately. Cancelling after shipping is **allowed**, and creates an orphan the [orphaned-dispatch report](/orders/api/reports-and-exports) surfaces.
+
+The reasoning: the module cannot resolve an orphan, and the alternative to reporting it is that it is discoverable only by somebody who already suspects it exists. An account that prefers the refusal sets this to `refuse`, and the guard then reads the **engine** — not the platform projection — so a stale display column cannot let a cancellation through.
+
+### `status_map`
+
+Exists so the external status a client sees is **data, not code**. Add an integration, map its vocabulary, and no deploy is needed. Without it, every new client would need a code change.
+
+## Seeded, and yours afterwards
+
+The installer seeds all six with defaults and stamps them installer-owned. Once you change one, it is **yours**: a later re-install reports it as relinquished and leaves it alone rather than reverting your decision.
+
+That is why the install output says things like:
+
+```
+relinquished: account||locked_fields_after_ack — account maintains this row — left as it is
+```
+
+## The reservation policy is separate
+
+The reservation policy has its own endpoints and its own scoping — see [Reservations](/orders/api/reservations). It is not one of the six keys above, because it is scoped per warehouse or material role rather than per account.
+
+## Every policy change is an event
+
+Both governance and reservation writes emit `orders.policy.changed`, carrying the key, the scope, the actor and the reason, plus the new value. A subscriber caching an account's policy can invalidate on it rather than polling.
+
+<Note>
+The audit trail is not the event stream. A policy write is recorded in the audit sink **and** emitted as an event, and they serve different readers — the audit for a person reconstructing what happened, the event for a system that must react.
+</Note>

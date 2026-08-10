@@ -1,0 +1,93 @@
+---
+title: "Demand, feasibility and coverage"
+description: "What other modules read from Orders, the feasibility check that never proposes a date, and the coverage view that degrades rather than lies."
+---
+
+These are the reads Orders serves — to Production, to Purchase, and to its own screens. They share one rule: **a component the module could not read is reported unavailable and named, never as zero.**
+
+## Open demand
+
+```http
+GET /open-demand           → view
+GET /demand                → view
+GET /demand/:lineUid       → view
+```
+
+What is still owed, for planning.
+
+```
+open = required − dispatched
+```
+
+Note what is **not** subtracted: allocated units are still owed until they ship, and produced units are still owed until they leave. A line with 500 required, 100 allocated and 18 dispatched has 482 open.
+
+Grouped by item and warehouse — the order's `delivery_warehouse`, which is the demand warehouse and does not follow a dispatch that shipped from somewhere else.
+
+## Feasibility
+
+```http
+GET /feasibility           → view
+```
+
+Answers "can I cover this line by this date", from up to four components: stock on hand, open supply from Purchase, claims already taken, and production in progress.
+
+<Warning>
+It **never proposes a date, never fills the field, and never refuses the date you chose.** It is a check, not a promise. Nothing about the answer is stored — there is no id, no timestamp, no status. Ask again and you get today's answer.
+</Warning>
+
+### It degrades rather than failing
+
+Each component reports itself present or absent, and an absent one is **named**:
+
+```json
+{
+  "verdict": "short",
+  "components_used": [ { "component": "on_hand", "qty": 78 } ],
+  "components_unavailable": [
+    { "component": "open_supply", "reason": "Purchase's read is not reachable on this account." }
+  ]
+}
+```
+
+A packaging-only manufacturer with no Purchase module gets a real answer from stock alone, and is told what was not counted. It is never told its stock is free.
+
+An absent component has **no quantity field at all**, so it cannot be read as zero by accident. An empty shelf, by contrast, is a real zero and says so.
+
+<Note>
+Inventory is the **floor**, not one component of four. With no balance reader the whole check is unavailable — it does not return zeros. A throwing stock read is reported unavailable rather than escaping as an exception.
+</Note>
+
+Under `none`, the claims component is `not_applicable` rather than unknown: there is genuinely nothing to ask, and saying "unknown" would imply the stock might be spoken for.
+
+## Coverage
+
+```http
+GET /coverage              → view
+```
+
+The standing view of every open line that is not fully covered, with the same components as feasibility and one addition: **lines compete for the same pool.**
+
+```json
+{
+  "rows": [
+    { "order_no": "SO-000042", "line_uid": "SO-000042-L01",
+      "item_code": "SKU-001", "warehouse": "WH-MAIN",
+      "required_by_date": "2026-08-20",
+      "owed_qty": 500, "allocated_qty": 100, "covered_qty": 178,
+      "shortfall_qty": 322, "state": "short",
+      "components_unavailable": [] }
+  ],
+  "refreshed_at": "2026-08-09T09:00:00.000Z",
+  "refresh": { "ms": 554, "grains": 2, "component_calls": 6 }
+}
+```
+
+Coverage is computed in two passes: existing allocations are drawn out of the pool first, then the remaining lines compete for what is left in required-by-date order. So two lines needing the same scarce stock do not both report themselves covered.
+
+`state` is `covered`, `short` or **`unknown`**.
+
+<Warning>
+**`unknown` is not a shortfall of zero.** A line the module could not judge comes back `state: "unknown"` with `shortfall_qty: 0` and the missing components named. That zero is correct in the payload — there is no *claimed* shortfall — and rendering it in a shortfall column turns a blind spot into "nothing wrong". Show it as "could not tell".
+</Warning>
+
+The view refreshes on read. The `refresh` block reports what that cost, so a slow account is visible rather than mysterious.

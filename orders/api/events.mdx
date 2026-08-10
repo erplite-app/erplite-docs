@@ -1,0 +1,58 @@
+---
+title: "Events"
+description: "The ten events Orders emits, when each fires, what it carries, and what delivery looks like today."
+---
+
+Orders writes every event to its outbox **inside the transaction of the state change it describes**. So an event and the change it reports either both happened or neither did — there is no window where stock moved and nothing said so.
+
+<Warning>
+**Delivery is not live yet.** The shared platform event bus is a separate workstream. Today the outbox rows are written, ordered and verifiable in the store; nothing subscribes to them and there is no webhook to register. This page documents the contract so you can build against it, and so the history is correct when delivery arrives — subscribers will get a complete record, not a start date.
+</Warning>
+
+## The catalogue
+
+Ten events. The set is **closed** — the type is checked at compile time, so an eleventh cannot be emitted by accident.
+
+| Event | When | Core payload |
+|---|---|---|
+| `orders.order.received` | An order is created by either route | `order_no`, customer, `source_system`, `external_order_key`, line count, `required_by_date` |
+| `orders.order.status_changed` | Any coarse-status transition | `order_no`, `from`, `to`, `actor`, `reason?` |
+| `orders.order.amended` | An audited amendment posts | `order_no`, before/after summary |
+| `orders.order.cancelled` | An order or line is cancelled or reduced | `order_no`, `line_uid?`, `cancelled_qty`, `reason` |
+| `orders.dispatch.allocated` | A dispatch line's allocation changes, **including to zero** | `dispatch_no`, `dispatch_line_uid`, `line_uid`, `order_no`, item, warehouse, `previous_qty`, `allocated_qty`, `delta`, status, policy, revision, `actor` |
+| `orders.dispatch.shipped` | A dispatch posts its stock issue | `dispatch_no`, `inv_issue_doc_no`, line summary |
+| `orders.dispatch.cancelled` | An unshipped dispatch is cancelled | `dispatch_no`, `reason`, released quantities |
+| `orders.dispatch.reversed` | A shipment is reversed | `dispatch_no`, `inv_reverse_doc_no`, `reason`, `actor` |
+| `orders.claim.changed` | A claim is taken, changed or released | item, warehouse, `dispatch_line_uid`, `qty`, `previous_qty`, `policy`, `actor`, `action` |
+| `orders.policy.changed` | Any reservation **or** governance policy write | `policy_key`, `scope`, `actor`, `reason`, `value` |
+
+### Why one `status_changed` rather than eight named events
+
+The consumer that needs these is the per-integration status map, which translates an internal status into an approved external one. One event carrying `from` and `to` lets that map be **data rather than code**, and adding a ninth state later needs no new event type.
+
+`received`, `amended` and `cancelled` stay separate because they carry different payloads and have different subscribers.
+
+## Who did it is on the event
+
+Allocating, claiming and releasing happen in the module's own store, which has no activity log of its own. So `orders.dispatch.allocated` and `orders.claim.changed` carry the **actor** and the **previous quantity**, and the allocation entry carries the actor and a timestamp.
+
+Both are needed, and the pair is the audit trail:
+
+> An allocation entry holds only the *latest* state of one dispatch line — re-allocating 100 to 250 overwrites it, and the 100 is gone. "Before and after" cannot live on a record that keeps only the after. The entry says who holds these units now; the event says what changed, from what, by whom.
+
+## What is deliberately not emitted
+
+- **A delivered or closed event** distinct from `status_changed` — both are observable from what is emitted
+- **A line-level status event** — same reason
+- **A dispatch created event** — creating a dispatch claims no stock and consumes no demand. The first dispatch event is its allocation
+- **A dispatch released event** — a release is `orders.dispatch.allocated` with a lower figure. The write is an absolute apply, and one event carrying `previous_qty` and `allocated_qty` mirrors it exactly
+
+## Ordering and delivery
+
+Each event is allocated a sequence number as it is appended. When the bus lands, delivery will be at-least-once, ordered per subscription, and HMAC-signed — the same contract Inventory's outbox already offers.
+
+Because delivery is at-least-once, a handler must be idempotent. Every event carries enough to be applied twice safely: absolute quantities rather than deltas, and the previous value where the change matters.
+
+<Note>
+Orders never writes another module's outbox, and no other module writes an `ord_*` table. Both halves are checked by a standing sweep over the source, in both directions.
+</Note>

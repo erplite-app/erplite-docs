@@ -1,0 +1,81 @@
+---
+title: "Receive orders from a client system"
+description: "The intake API, idempotency by external key, and what a re-send does."
+---
+
+If a client system posts orders into ERPLite, use the intake route rather than the ordinary create. Same behaviour, plus provenance and idempotency.
+
+## Set up the principal
+
+Create an `api_role` user named **exactly** `orders-intake`. It holds `view`, `order.intake`, `order.acknowledge` and `order.receipt_confirm` — and deliberately **not** `dispatch.ship`. An order-receiving integration should not be able to post real stock.
+
+<Warning>
+A generic API user holds no Orders capabilities at all. The name is what grants the set, so it must match exactly.
+</Warning>
+
+## Post an order
+
+```http
+POST /orders/intake
+```
+
+```json
+{
+  "source_system": "acme-erp",
+  "external_order_key": "PO-99001",
+  "customer_code": "CUST-001",
+  "ship_to_code": "CUST-001-SITE",
+  "delivery_warehouse": "WH-MAIN",
+  "required_by_date": "2026-08-20",
+  "lines": [ { "item_code": "SKU-001", "entered_qty": 300, "ordered_uom": "KG" } ]
+}
+```
+
+`source_system` and `external_order_key` are recorded on the order and carried on the `orders.order.received` event, so you can reconcile both ways later.
+
+## What a re-send does
+
+The key makes the call idempotent, and the module distinguishes five cases:
+
+| You send | You get |
+|---|---|
+| A new key | A new order |
+| The same key, the same payload | The existing order. **No second order** |
+| The same key, a changed payload | An **amendment** on the existing order |
+| The same key while the first is still in flight | Reported in flight — never a completed order |
+| The same key after a failed attempt | Retried and completed |
+
+The last row matters most. A create that failed part-way does **not** block its key for ever: the receipt is either completed or abandoned, and an abandoned key is free for the next send.
+
+<Note>
+Re-ordering the lines is not a change, and a different `occurred_at` is not a change. Only the order's substance counts, so a client that serialises differently between retries does not accidentally raise an amendment.
+</Note>
+
+## Keys are scoped to their source
+
+The same `external_order_key` from a different `source_system` is a different order. Two client systems can both use `PO-1` without colliding.
+
+## Failures are all-or-nothing
+
+A line-level validation failure leaves **no order created at all**. You will never find half an order to clean up.
+
+## Acknowledging
+
+The principal may also acknowledge and confirm receipt:
+
+```http
+POST /orders/:orderNo/acknowledge
+POST /orders/:orderNo/buyer-receipt
+```
+
+`buyer-receipt` records that the buyer confirmed the goods arrived. It has a consequence worth knowing: once recorded, the shipment **can no longer be reversed**.
+
+## If a send is stuck
+
+An intake receipt left `pending` means the key was claimed and the order write was lost. Ask a supervisor to run:
+
+```http
+POST /maintenance/sweep-intake-receipts
+```
+
+Report first — it is a dry run without `?commit=true`. It will either complete the order or abandon the receipt and free the key.

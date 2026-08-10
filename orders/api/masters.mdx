@@ -1,0 +1,131 @@
+---
+title: "Customers and addresses"
+description: "Customers, their ship-to addresses, credit exposure, and the deactivation rules."
+---
+
+Customers and ship-to addresses are the only master data Orders owns. Items, units and warehouses belong to Inventory — address them by code and this module resolves them.
+
+## Customers
+
+### List and read
+
+```http
+GET /customers
+GET /customers/:code
+```
+
+Both need `view`. The list returns every customer, active and inactive.
+
+```json
+{
+  "customers": [
+    {
+      "recordId": "k34hbm",
+      "customer_code": "CUST-001",
+      "customer_name": "Noice",
+      "bill_to_legal_name": "Noice Private Limited",
+      "tax_identity": "29AABCU9603R1ZM",
+      "contact_name": "A Person",
+      "email": "a@example.com",
+      "phone": "+91 90000 00000",
+      "comms_preference": "email",
+      "payment_terms": "NET30",
+      "credit_limit": 250000,
+      "status": "active"
+    }
+  ]
+}
+```
+
+<Warning>
+The status field is `status`, with the values `active` and `inactive`. There is no boolean `active` field.
+</Warning>
+
+### Create and edit
+
+```http
+POST  /customers            → customer.maintain
+PATCH /customers/:code      → customer.maintain
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `customer_code` | on create | The identity. Not accepted on update — a code cannot be renamed |
+| `customer_name` | yes | |
+| `comms_preference` | **yes** | `email` or `none`. No default — see below |
+| `bill_to_legal_name` | no | |
+| `tax_identity` | no | GSTIN in India. One identity field — there is no separate PAN |
+| `contact_name`, `email`, `phone` | no | |
+| `payment_terms` | no | Free text, e.g. `NET30` |
+| `credit_limit` | no | A number. Information only |
+| `email_consent` | no | Boolean |
+| `source_system`, `external_key` | no | Set by intake; yours to use for reconciliation |
+
+<Note>
+**`comms_preference` is required and has no default.** `none` means the customer has opted out, and inferring an opt-out from an omitted field would record a consent decision the customer never made. Ask, then send the answer.
+</Note>
+
+### Deactivate and reactivate
+
+```http
+POST /customers/:code/deactivate   → customer.maintain (+ master.deactivate)
+POST /customers/:code/reactivate   → customer.maintain
+```
+
+Status is not a field you set — deactivation runs a guard. A customer holding live open orders is refused, and the refusal names them.
+
+### Credit exposure
+
+```http
+GET /customers/:code/exposure      → view
+```
+
+```json
+{ "credit_limit": 250000, "open_unshipped_value": 41000, "currency": "INR" }
+```
+
+<Warning>
+**Nothing gates on this.** The limit and the exposure are returned beside each other and compared nowhere. Going over the limit refuses no order and blocks no shipment — that conversation happens outside the system. If you build a screen for it, say so, or somebody will start treating it as a rule.
+</Warning>
+
+## Ship-to addresses
+
+An address belongs to exactly one customer. An order may name one, and **only that customer's own addresses are accepted** — naming another customer's address is refused.
+
+```http
+GET   /customers/:code/ship-tos                       → view
+GET   /customers/:code/ship-tos/:shipTo               → view
+POST  /customers/:code/ship-tos                       → customer.maintain
+PATCH /customers/:code/ship-tos/:shipTo               → customer.maintain
+POST  /customers/:code/ship-tos/:shipTo/deactivate    → customer.maintain
+POST  /customers/:code/ship-tos/:shipTo/reactivate    → customer.maintain
+```
+
+```json
+{
+  "ship_to_code": "CUST-001-SITE",
+  "ship_to_name": "Chennai site",
+  "address_line_1": "1 Main Road",
+  "city": "Chennai",
+  "state": "Tamil Nadu",
+  "postal_code": "600001",
+  "country": "India",
+  "contact_name": "A Person",
+  "phone": "+91 90000 00000",
+  "status": "active"
+}
+```
+
+Field names to get right: `address_line_1` and `address_line_2` (with underscores before the number), and `postal_code` — not `pincode`.
+
+<Note>
+A ship-to is a **destination**. It is not the same as the order's `delivery_warehouse`, which is the warehouse goods are fulfilled *from*. See [Concepts](/orders/concepts).
+</Note>
+
+## Import
+
+```http
+POST /imports/:entity     → import.commit
+```
+
+`entity` is `customers` or `ship-tos`. The pipeline validates the whole file and reports every failure with its row, then commits only on a second call — so a bad file changes nothing.
