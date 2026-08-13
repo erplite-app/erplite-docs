@@ -1,0 +1,104 @@
+---
+title: "Authentication and roles"
+sidebarTitle: "Auth and roles"
+description: "The allowlist, the role ladder, every capability and what it gates, and what a machine caller may do."
+---
+
+## Getting in at all
+
+Every request carries a bearer token and is **account-scoped by it**. There is no `account` parameter anywhere in this API.
+
+Three separate things have to be true before a call succeeds, and they fail in this order:
+
+1. **The token authenticates.** Otherwise `401`.
+2. **The account is on the production allowlist.** Otherwise `403 not_enabled`, on *every* route including `/health` and `/whoami`.
+3. **The caller holds the capability the route needs.** Otherwise `403` naming the capability.
+
+<Note>
+Installing the module and enabling it are different things. A fully installed account — tables created, policies seeded — still answers `not_enabled` on everything until it is added to the allowlist.
+</Note>
+
+## The role ladder
+
+Roles are cumulative and the highest held wins:
+
+```
+viewer  →  operator  →  supervisor  →  admin
+```
+
+Roles come from **role bindings** on the account (`prd_role_binding`), not from the platform role. An account with no bindings grants nobody anything. A binding may name an ERPLite role, a user id, or a team id.
+
+## Capabilities
+
+Each capability has a **floor** — the lowest role that holds it.
+
+| Capability | Floor | Gates |
+|------------|-------|-------|
+| `wo.view` | viewer | Reading work orders, requirements, reports and exports |
+| `wo.create` | operator | Raising and editing a Draft work order |
+| `wo.release` | operator | Releasing a line with no shortfall |
+| `wo.start` | operator | Starting a line |
+| `wo.complete` | operator | Completing a line, which posts stock |
+| `wo.release_override` | **supervisor** | Releasing *over* a blocking shortfall |
+| `wo.over_produce` | **supervisor** | Completing with output above the over-production tolerance |
+| `wo.over_plan` | **supervisor** | Planning above the linked demand's outstanding quantity |
+| `wo.amend` | **supervisor** | Amending a released line |
+| `wo.cancel` | **supervisor** | Cancelling a line |
+| `wo.short_close` | **supervisor** | Short-closing a line |
+| `wo.close` | **supervisor** | Closing a line as a total loss |
+| `wo.reverse` | **supervisor** | Reversing a posting |
+| `policy.manage` | **admin** | Strategy, release gate, tolerance, bindings, subscriptions |
+
+The shape worth noticing: an **operator** can run the normal loop end to end — release, start, post, complete — and a **supervisor** is required for everything that departs from the plan. Overriding a shortfall, planning more than was asked for, producing more than planned, amending, cancelling, writing off, reversing. Those are the acts that need somebody accountable.
+
+## Ask, do not reimplement
+
+`GET /whoami` returns the caller's role and the exact capability list they hold. Gate your UI on that rather than deriving it from the ladder yourself.
+
+```json
+{
+  "kind": "user",
+  "id": "ul3byh",
+  "display": "Bala",
+  "role": "admin",
+  "roles": ["supervisor", "admin"],
+  "capabilities": ["wo.view", "wo.create", "wo.release", "..."]
+}
+```
+
+Two rules for using it:
+
+- **The server still enforces every capability on every write.** A hidden control and a refused write agree, and the refusal is the authoritative one. Nothing on the client may be the only thing between a user and an action.
+- **Answer "no" while loading.** Showing a control and then removing it is worse than showing it late.
+
+## Machine callers
+
+A machine caller arrives as the account's `api_role` user. There is exactly one per account.
+
+It holds a **flat, narrow set** and cannot be widened by a role binding:
+
+| Capability | Why |
+|------------|-----|
+| `wo.view` | Reading is safe |
+| `wo.complete` | A scheduled sweep completing a run is a real path |
+
+Everything else is refused, and the refusal cannot be escalated by binding a role to the api user. In particular a machine caller may **not** release over a shortfall, over-plan, over-produce, amend, cancel, short-close, close or reverse — every act that departs from the plan needs a person.
+
+<Note>
+This is deliberately narrower than it could be. Widening a capability set later is safe; narrowing one breaks a live integration.
+</Note>
+
+## Refusals
+
+Refusals carry a message written to be shown to the person who hit them. The over-planning guard names the quantity already committed; the shortfall gate names the component and the shortage; the demand gate names the order's status.
+
+```json
+{
+  "error": "over_planning_refused",
+  "message": "SO-9101-L1 has 100 outstanding and 100 is already planned across live work orders. Planning 160 needs the excess declared as make-to-stock.",
+  "field": "planned_qty",
+  "line": 1
+}
+```
+
+**Show the message.** Replacing it with a generic "something went wrong" throws away the one thing that tells the user what to do next, and these messages were written for exactly that. Note that `field` may name something your form does not have an input for — render it somewhere regardless rather than only beside a matching field, or the message reaches the browser and is discarded.

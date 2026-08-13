@@ -1,0 +1,142 @@
+---
+title: "Concepts"
+sidebarTitle: "Concepts"
+description: "Work orders and lines, the state machine, the recipe pin, material requirements, and what a posting actually does."
+---
+
+## Work orders and lines
+
+A **work order** is a header: a date, a warehouse, optionally a target date and an assignee. It holds no quantities of its own and its status is *derived* from its lines.
+
+A **work order line** is one thing being made: an item, a quantity, and the demand it was raised against. Every meaningful act happens on a line, not on the header. A work order with three lines is three independent runs that happen to share a piece of paper.
+
+Each line has a permanent `line_uid` of the form `WO-000123-L01`. It never changes and is never reused — amending a line's quantity keeps its uid, which is why amending exists rather than making you cancel and re-raise.
+
+### Every line names its demand
+
+`demandRef` is required when you create a line. A run exists because something asked for it, and recording *what* is how the run explains itself six weeks later. The types are:
+
+| Type | Means |
+|------|-------|
+| `mfr_so_line` | A customer order line from the Orders module |
+| `work_order_line` | A component for another run — the chained or semi-finished case |
+| `stock_policy` | A reorder policy asked for it |
+| `manual` | A person decided. Carries a free-text `reason`, which is required |
+
+`manual` needing a reason is the point: a run nobody can account for is the thing this field exists to prevent.
+
+## The state machine
+
+A line moves through states. You never write one — you call an action and the module decides.
+
+| State | Means |
+|-------|-------|
+| `Draft` | Raised, nothing pinned, nothing committed |
+| `Released` | A recipe version is pinned and material has been checked and snapshotted |
+| `In Progress` | Somebody started it |
+| `posted, demand not yet credited` | **Stock moved and the demand has not been told.** Not finished |
+| `Completed` | Finished, and the demand knows |
+| `Short-closed` | Something was made and the rest was given up |
+| `Cancelled` | Nothing was made and the line was abandoned |
+| `Closed` | A total loss — material consumed, nothing produced |
+
+<Warning>
+**`posted, demand not yet credited` is not `Completed`, and must never be shown as it.** A line in that state has moved real stock and has not told the order it was made for. Collapsing the two on a screen, a report or an export is exactly the silent divergence the state exists to surface. Resolve it by calling the credit-demand retry, not by treating it as done.
+</Warning>
+
+### Cancel and short-close are one call and two facts
+
+There is one cancel endpoint. What it records depends on whether the line has produced anything:
+
+- **Nothing posted** → the line is `Cancelled`. It made nothing.
+- **Something posted** → the line is `Short-closed`. What was made stays in stock; the remainder is given up.
+
+They mean different things to everybody downstream, so a screen should say which one it is about to cause rather than offering one unlabelled button.
+
+## The recipe pin
+
+Before release, a Draft line has **no recipe**. Asking for its recipe returns a *preview* of whatever is currently published, and that preview follows the published version as it changes — publish a new one while a Draft line is open and the preview moves.
+
+**Release pins the version.** From that moment the run is built against the version it pinned, and later publishing does not touch it. This is what makes a completed run explainable: you can ask which recipe it was actually built against and get an answer that cannot drift.
+
+The preview payload carries `is_preview: true` and a `preview_caveat` sentence, so a caller cannot show it as settled by forgetting.
+
+## Material requirements
+
+Releasing a line does three things beyond pinning the recipe:
+
+1. **Explodes the recipe** for the outstanding quantity, through Inventory's own explosion — Production never re-derives the scaling.
+2. **Reads stock** for each component, at the line's warehouse.
+3. **Snapshots the result** into `prd_material_requirement`, one row per component, recording what was required, what was on hand, and what was short *at that moment*.
+
+The snapshot is a record of a decision, not a live figure. Live shortage comes from the shortfall endpoints, which read stock now.
+
+### The shortfall gate
+
+If a component is short, release is refused — unless you hold `wo.release_override` and pass `overrideShortfall`. The refusal names the component and the shortage, so it is actionable rather than a wall.
+
+Two subtleties worth knowing:
+
+- **The policy is resolved on the component, not on the item being made.** Whether a shortage blocks is a fact about the material, not about the product.
+- **Siblings are netted.** Three lines released a week apart against the same 200 kg each snapshotted 200; subtracting each in turn would understate the shortage by 400. The live shortfall read nets across every live work order rather than summing snapshots.
+
+## What a posting actually does
+
+Posting is the only way a produced quantity enters the system. One line posts as **one** Inventory call, which has three consequences:
+
+**A multi-line work order is several calls and is not atomic across them.** If one line's posting fails, the succeeded lines stay posted and the work order shows which line failed and why. This is a visible, expected state — `partially_posted` — not a fault.
+
+**You must name what the run consumes.** Inventory refuses a run with an empty consume list. Ask the consume-plan endpoint what a line would consume; it returns the components, the warehouse each would come from, and the lots available for batch-tracked ones.
+
+**The lot is yours to choose.** The consume plan deliberately does *not* pick one. Inventory lists every batch whatever its status, so the first offered may be expired — and under a `warn` policy an expired batch is *consumed* rather than refused. Which lot went into a run is the genealogy record, so it should be a choice somebody made.
+
+### The idempotency key, and why a wrong quantity cannot be re-posted
+
+Each line has a permanent idempotency key derived from its uid. It carries no timestamp and no version suffix, so a retry always reuses it.
+
+- Post the **same** values again → nothing new is posted, and you get the original result.
+- Post **different** values under that key → **refused**.
+
+So an operator who posts 480 by mistake cannot fix it by posting 500. The correction is to **reverse** the posting and post again. Any screen that offers posting must say this *before* the operator confirms — the module serves the exact sentence for that purpose.
+
+### Three outcomes, and only one is a success
+
+A posting answers with an `outcome`:
+
+| Outcome | Means |
+|---------|-------|
+| `posted` | Stock moved, and this call did it |
+| `already_completed` | **This call posted nothing.** The figures belong to whoever won |
+| `in_flight` | Another posting owns this line right now |
+
+<Warning>
+`already_completed` arrives as a `200` and must never be rendered as a plain success. It carries the winner's quantity, and showing that as the caller's own is how one operator ends up believing they recorded a number somebody else recorded.
+</Warning>
+
+When it happens, the response names **who** completed it, **when**, and **with what quantity** — each of which may be `null`, meaning *not recorded*. On a replay of your own posting all three are known. When you lost a concurrent race none of them are, because the winning posting never went through this module's claim; the module returns `null` rather than naming the one caller it knows did *not* post.
+
+## Warnings ride on success
+
+Inventory raises a **warning** when a policy took a decision a human would otherwise have taken — consuming an expired batch under a `warn` policy is the live case. The stock moved in full; nothing about the result distinguishes it from a clean run except the warning.
+
+Two consequences:
+
+- Treating a non-empty `warnings` array as a failure signal is wrong.
+- Discarding it loses the only record that expired material went into a finished good, which is precisely what a recall or a customer complaint asks for later.
+
+The warning's `line` field is the **recipe's** component ordinal, not an index into your `consumes` array.
+
+## Over-production and under-yield
+
+**Under-yield** — making less than planned — leaves the remainder available. Completing a line at 480 against a plan of 500 credits the demand with 480 and leaves 20 owed, so a top-up run can be raised.
+
+**Over-production** — making more than planned — is allowed within a tolerance, and above it needs `wo.over_produce`. The excess is **make-to-stock** and is never credited to the customer's order. A run of 512 against a plan of 500 credits the order with 500; the other 12 are stock.
+
+## Scrap, write-off, and the difference
+
+| Action | Stock effect | Line survives |
+|--------|--------------|---------------|
+| **Scrap** | **None.** The scrapped units never entered a balance | Yes — the run continues |
+| **Write off** | Material leaves stock through an Inventory issue | No — the line closes |
+
+Scrap moving no stock surprises people, and it is correct: the scrapped units were never received into a balance, so there is nothing to take out. The material they consumed was already accounted for when the run consumed it, and issuing them again would double-count the loss.

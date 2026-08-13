@@ -1,0 +1,182 @@
+---
+title: "Work orders"
+description: "The queue and its flags, one work order with its lines, and raising a Draft."
+---
+
+## List work orders
+
+```http
+GET /work-orders?status=Released
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "work_orders": [
+    {
+      "work_order_no": "WO-000123",
+      "status": "Released",
+      "warehouse": "WH-A",
+      "work_order_date": "2026-08-11",
+      "target_date": "2026-08-15",
+      "partially_posted": false,
+      "needs_decision": true,
+      "blocked_lines": [
+        {
+          "line_uid": "WO-000123-L03",
+          "reason": "The demand this line was raised against is cancelled.",
+          "posted_qty": 20
+        }
+      ],
+      "short_of_material": true,
+      "short_components": [
+        { "component_item": "SKU-FLOUR", "shortfall": 700, "base_uom": "KG" }
+      ],
+      "demand_unknown": false,
+      "shortfall_unknown": false
+    }
+  ]
+}
+```
+
+### The three flags
+
+They are computed on **every read** and are not stored anywhere. That matters: a copied reason goes stale, and a demand un-cancelled after a sweep would leave the queue flagging work nobody is blocking.
+
+**`needs_decision`** — at least one line's demand was cancelled or closed while the run was under way. The requirement's own words are "needing a decision", and it is a decision: finish the run into stock, or short-close it and keep what was made. `blocked_lines` says which lines and why, so the row explains itself without a second call.
+
+**`partially_posted`** — some lines have moved stock and some have not. Expected, not a fault. One line posts as one Inventory call, so a multi-line run is several calls and is not atomic across them.
+
+**`short_of_material`** — short against a stock read taken **now**, netted across every live work order. `short_components` names what and by how much.
+
+<Note>
+`demand_unknown` and `shortfall_unknown` are the *degraded* cases: the module could not answer the question at all. Do not render either as "fine" — a run whose material could not be checked is not a run with material.
+</Note>
+
+## Get one work order
+
+```http
+GET /work-orders/WO-000123
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "work_order_no": "WO-000123",
+  "status": "In Progress",
+  "warehouse": "WH-A",
+  "work_order_date": "2026-08-11",
+  "target_date": "2026-08-15",
+  "notes": "Rush for the Tuesday van",
+  "assignee": "kavya",
+  "partially_posted": true,
+  "lines": [
+    {
+      "line_uid": "WO-000123-L01",
+      "item": "SKU-CAKE",
+      "planned_qty": 500,
+      "posted_qty": 480,
+      "scrapped_qty": 5,
+      "line_status": "posted, demand not yet credited",
+      "posting_state": "posted",
+      "posting_refusal": null,
+      "posting_warnings": [
+        "component 3: Batch \"LOT-MILK-EXPIRED-2026-07-01\" of SKU-MILK expired on 2026-07-01. It was consumed because policy allows it with a warning."
+      ],
+      "bom_version": "a2mzsx",
+      "strategy": "make_to_order",
+      "demand_ref_type": "mfr_so_line",
+      "demand_ref_id": "SO-000117-L01",
+      "variance": 20
+    }
+  ]
+}
+```
+
+`variance` is `planned − posted`. Positive is under-yield.
+
+<Warning>
+`line_status: "posted, demand not yet credited"` is **not** `Completed`. The stock moved and the order it was made for has not been told, so this run is not finished and the demand still reads as outstanding to everybody else. Render it as itself, and offer [the credit retry](/production/api/lifecycle#tell-the-demand-again).
+</Warning>
+
+`posting_refusal` carries **Inventory's own wording** unchanged. Show it as-is; it names the thing that stopped the posting.
+
+## Raise a work order
+
+```http
+POST /work-orders
+```
+
+Requires `wo.create`. Planning above what a demand still needs additionally requires `wo.over_plan`.
+
+```json
+{
+  "workOrderDate": "2026-08-13",
+  "targetDate": "2026-08-18",
+  "warehouse": "WH-A",
+  "notes": "Tuesday van",
+  "assignee": "kavya",
+  "lines": [
+    {
+      "item": "SKU-CAKE",
+      "qty": 500,
+      "uom": "Nos",
+      "factorToBase": 1,
+      "baseUom": "Nos",
+      "demandRef": { "type": "mfr_so_line", "id": "SO-000117-L01" }
+    },
+    {
+      "item": "SKU-BREAD",
+      "qty": 20,
+      "uom": "Tray",
+      "factorToBase": 12,
+      "baseUom": "Nos",
+      "demandRef": {
+        "type": "manual",
+        "id": "shift-buffer",
+        "reason": "Buffer for the Tuesday van, no order behind it"
+      },
+      "excessIsForStock": true
+    }
+  ]
+}
+```
+
+Answers `201`:
+
+```json
+{
+  "work_order_no": "WO-000124",
+  "recordId": "rec_...",
+  "status": "Draft",
+  "lines": [
+    { "line_uid": "WO-000124-L01", "item": "SKU-CAKE", "planned_qty": 500, "base_uom": "Nos" },
+    { "line_uid": "WO-000124-L02", "item": "SKU-BREAD", "planned_qty": 240, "base_uom": "Nos" }
+  ]
+}
+```
+
+Note the second line: 20 trays at 12 each became **240 in the base unit**. Everything after creation is base units.
+
+### Three things that will refuse you
+
+**A missing or unexplained demand reference.** `demandRef` is required on every line, and `manual` needs a `reason`. A run nobody can account for is what this prevents.
+
+**Planning more than the demand still needs.** Refused unless the line sets `excessIsForStock: true` *and* the caller holds `wo.over_plan`. The refusal names the outstanding quantity and what is already planned across live work orders, so it can be acted on:
+
+```json
+{
+  "error": "over_planning_refused",
+  "message": "SO-000117-L01 has 100 outstanding and 100 is already planned across live work orders. Planning 160 needs the excess declared as make-to-stock.",
+  "field": "planned_qty",
+  "line": 1
+}
+```
+
+**A demand that is not open for production.** Each demand type carries a gate — an unapproved order, a cancelled one. The refusal names the order's status.
+
+<Note>
+Creation is a **three-step** operation internally: numbers are allocated in one engine transaction, the platform rows are written, then the authoritative positions are created. No transaction spans the engine and an HTTP call, deliberately — holding one open across a network call turns the likely failure (a gap in numbering) into the unrecoverable one (a duplicate number).
+</Note>

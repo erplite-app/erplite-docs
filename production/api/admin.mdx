@@ -1,0 +1,116 @@
+---
+title: "Operating the module"
+description: "Health, identity, the operator warnings you must show before a write, and the projection reconciler."
+---
+
+## Health
+
+```http
+GET /health
+```
+
+Requires `wo.view`.
+
+```json
+{ "module": "production", "version": "0.1.0", "status": "ok" }
+```
+
+Answers "is production switched on for me". An account that is not on the pilot allowlist gets `403 not_enabled` here too — this is not a public liveness probe.
+
+## Identity
+
+```http
+GET /whoami
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "kind": "user",
+  "id": "ul3byh",
+  "display": "Bala",
+  "role": "admin",
+  "roles": ["supervisor", "admin"],
+  "capabilities": ["wo.view", "wo.create", "wo.release", "wo.start", "wo.complete", "..."]
+}
+```
+
+Gate your UI on `capabilities` rather than deriving them from the role ladder. See [Authentication and roles](/production/auth-and-roles).
+
+## Operator warnings
+
+```http
+GET /limitations
+```
+
+Requires `wo.view` — this is the text, not the act, so a viewer explaining why they cannot complete needs it too.
+
+```json
+{
+  "limitations": [ "..." ],
+  "complete": [
+    {
+      "act": "complete",
+      "requirement": "PRD-INT-03",
+      "text": "Check the quantity before you confirm. This posting is recorded under a permanent key for this line, so completing again with the SAME figures changes nothing and posts nothing new — but completing again with a DIFFERENT figure is refused outright, not accepted as a correction. An operator who confirms 480 by mistake cannot fix it by completing again with 500. The way to correct a wrong quantity is to REVERSE this posting and post again."
+    },
+    {
+      "act": "complete",
+      "requirement": "PRD-YLD-06",
+      "text": "This figure is a YIELD variance: planned output against actual output. It is not a material variance..."
+    }
+  ],
+  "post": [ "..." ],
+  "already_completed_notice": "This line was already completed by someone else. What you are seeing now are THEIR recorded figures, not yours — your completion posted nothing..."
+}
+```
+
+<Warning>
+**Show these before the operator confirms, and show the server's wording.**
+
+Both are requirements about *what the operator is told and when*. The reuse warning has to arrive while the confirm button is still there — after the act it is useless, because by then reversal is the only route left. Do not restate them in your own words: a second copy is a copy that keeps saying what the module used to do.
+
+If this read fails, **fail closed**. A warning that silently disappears when an endpoint is down satisfies the requirement exactly as often as the endpoint happens to be up.
+</Warning>
+
+Render the list rather than naming the two entries you expect. A sentence added to the module should reach the operator without a client change.
+
+`already_completed_notice` is shown at a different moment to a different person: the loser of a concurrent completion, whose call posted nothing. See [posting outcomes](/production/api/lifecycle#read-outcome-first).
+
+## The projection reconciler
+
+```http
+GET /work-orders/WO-000123/reconcile
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "as_of": "2026-08-13T09:20:00.000Z",
+  "checked": 3,
+  "divergences": [
+    { "line_uid": "WO-000123-L02", "field": "posted_qty", "engine": 80, "platform": 0 }
+  ],
+  "missing": []
+}
+```
+
+Compares the **engine's positions** against the **platform's display columns**, and reports what disagrees.
+
+Two things to understand before acting on it:
+
+**It is a read.** It repairs nothing. It tells you what is out of step.
+
+**A fresh divergence is usually lag, not a fault.** The display columns are refreshed after each write and travel through a search index, so reading this a moment after a posting will often show a difference that resolves itself. Divergence that persists is the interesting kind.
+
+When the engine and the platform disagree, **the engine is right**. That is what "authoritative" means here, and it is why quantities should be read from this module's endpoints rather than from `prd_*` tables.
+
+## What this module never does
+
+Worth stating on the operations page, because integrators reasonably ask:
+
+- **It writes no `inv_*` table.** Every stock effect goes through Inventory across a seam, and every one carries a `work_order` source reference so a movement can be traced back to the run that caused it.
+- **It has no endpoint that sets a produced quantity.** Not an omission — the absence is the control.
+- **It does not sweep demands on a timer.** Applying a cancellation is [an explicit call](/production/api/demand#apply-a-demands-cancellation) with a response listing what happened to each line, because half the outcomes are a person's decision and a background job nobody watches is where those get lost.

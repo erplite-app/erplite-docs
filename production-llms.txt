@@ -1,0 +1,235 @@
+# ERPLite Production Module — API Reference for LLMs
+
+> Make goods. Work orders, recipes, material requirements, yield, and the seam
+> into Inventory. Served by the BFF at `/bff-service/production`. Every request
+> is account-scoped by the bearer token.
+
+## Access
+
+- Pilot module behind an ACCOUNT ALLOWLIST. An account not on it gets
+  `403 not_enabled` on EVERY route including `/health` and `/whoami`.
+- Installing and enabling are different. A fully installed account still answers
+  `not_enabled` until it is added to the allowlist.
+- Capabilities come from ROLE BINDINGS (`prd_role_binding`), not the platform
+  role. An account with no bindings grants nobody anything.
+- Roles form a ladder: viewer -> operator -> supervisor -> admin. Highest wins,
+  cumulative.
+- A machine caller arrives as the account's single `api_role` user and holds a
+  FLAT set that a binding CANNOT widen:
+      wo.view, wo.complete
+  It may not release-override, over-plan, over-produce, amend, cancel,
+  short-close, close or reverse. Every act that departs from the plan needs a
+  person.
+
+## Capability floors
+
+    wo.view              viewer      read work orders, requirements, reports, exports
+    wo.create            operator    raise/edit a Draft
+    wo.release           operator    release with no shortfall
+    wo.start             operator    start a line
+    wo.complete          operator    complete a line (posts stock)
+    wo.release_override  supervisor  release OVER a blocking shortfall
+    wo.over_produce      supervisor  output above the over-production tolerance
+    wo.over_plan         supervisor  plan above the demand's outstanding qty
+    wo.amend             supervisor  amend a released line
+    wo.cancel            supervisor  cancel a line
+    wo.short_close       supervisor  short-close a line
+    wo.close             supervisor  close a line as a total loss
+    wo.reverse           supervisor  reverse a posting
+    policy.manage        admin       strategy, gate, tolerance, bindings
+
+## THE FIVE RULES THAT EXPLAIN THE MODULE
+
+1. A PRODUCED QUANTITY MAY ONLY COME FROM AN INVENTORY POSTING. There is no
+   endpoint that sets one. You post output, Inventory records the movement, the
+   engine reads it back. Correcting a wrong quantity means REVERSING and posting
+   again — not editing a field.
+
+2. QUANTITIES LIVE IN AN ENGINE, NOT IN THE TABLES. `prd_line_position` is
+   authoritative. The columns on `prd_work_order_line` are a DISPLAY PROJECTION
+   that lags through Elasticsearch and is healed by a reconciler. Read this
+   module's endpoints; never read `prd_*` tables for quantities.
+
+3. A RECIPE IS A PREVIEW UNTIL RELEASE. A Draft line has no pinned version and
+   its preview follows whatever is published. Release PINS it.
+
+4. PRODUCTION NEVER WRITES STOCK. It calls Inventory across a seam. It writes no
+   `inv_*` table; nothing outside writes a `prd_*` table. Every stock effect
+   carries a `work_order` source reference.
+
+5. `null` IS NEVER `0`. null = "could not read". 0 = "is zero". Applies to
+   on_hand, stock_at_release, consumed_per_ledger, unconsumed, yield_pct,
+   postedQty, completedBy, completedAt. Writing `?? 0` converts "we do not know"
+   into a measurement.
+
+## Line states
+
+    Draft
+    Released                          recipe pinned, material snapshotted
+    In Progress                       somebody started it
+    posted, demand not yet credited   STOCK MOVED, DEMAND NOT TOLD. Not finished.
+    Completed                         finished and the demand knows
+    Short-closed                      something made, rest given up
+    Cancelled                         nothing made, abandoned
+    Closed                            total loss: material consumed, nothing made
+
+NEVER render `posted, demand not yet credited` as `Completed` on any screen,
+report or export. Resolve it with POST .../credit-demand.
+
+You never write a status. Every transition is an action; the module derives it.
+
+## Endpoints
+
+### Identity and operations
+    GET  /health                       wo.view
+    GET  /whoami                       wo.view   role + exact capability list
+    GET  /limitations                  wo.view   operator warnings — SHOW BEFORE A WRITE
+    GET  /work-orders/:wo/reconcile    wo.view   engine vs platform. A READ; repairs nothing
+
+### Work orders
+    GET  /work-orders?status=          wo.view   -> { work_orders: [...] }
+    GET  /work-orders/:workOrderNo     wo.view   -> header + lines
+    POST /work-orders                  wo.create -> { work_order_no, lines: [...] }
+
+### Line lifecycle (all addressed by permanent line_uid)
+    PATCH /work-order-lines/:uid/release       wo.release   { item, warehouse?, strategy?, overrideShortfall? }
+    PATCH /work-order-lines/:uid/amend         wo.amend     { planned_qty, reason }   <- NOT `qty`
+    POST  /work-order-lines/:uid/start         wo.start     { note? }
+    POST  /work-order-lines/:uid/post          wo.complete  see POSTING below
+    POST  /work-order-lines/:uid/complete      wo.complete  { note? }
+    POST  /work-order-lines/:uid/scrap         wo.complete  { scrappedQty, reason }   <- NOT `qty`
+    POST  /work-order-lines/:uid/fail          wo.close     { lostQty, reason, consumes[] }
+    POST  /work-order-lines/:uid/reverse       wo.reverse   { effective_at, reason }  <- effective_at REQUIRED
+    POST  /work-order-lines/:uid/cancel        wo.cancel    { reason }
+    POST  /work-order-lines/:uid/credit-demand wo.complete  {}
+
+### Material
+    GET /recipes/published?item=            wo.view  PREVIEW, follows published
+    GET /work-order-lines/:uid/consume-plan wo.view  what a run consumes + available lots
+    GET /work-order-lines/:uid/makeable     wo.view  short components with a recipe
+    GET /shortfalls                         wo.view  live, netted across live orders
+
+### Demand
+    GET  /demand?item=&warehouse=&type=      wo.view   gated demand is ABSENT (server-side)
+    GET  /work-order-lines/:uid/demand       wo.view   + status_ceiling
+    POST /demand/:type/:id/cancelled         wo.cancel apply a cancellation. Idempotent
+
+### Reports and exports
+    GET /reports/demand-coverage?item=&customer=&demandType=   wo.view
+    GET /reports/yield                                         wo.view
+    GET /reports/shortfalls?item=&workOrders=                  wo.view
+    GET /reports/drill-paths                                   wo.view
+    GET /exports/:entity                                       wo.view
+        entity = work_orders | work_order_lines | material_requirements
+
+## POSTING — the part most callers get wrong
+
+Body:
+    {
+      effectiveAt: ISO instant,
+      outputQty: number,          GOOD output only; scrap is separate
+      outputItem: string,
+      outputWarehouse: string,
+      outputBatch?: { code, mfg_date?, expiry_date? },
+      consumes: [{ component_item, warehouse, batch? }]   MUST NOT BE EMPTY
+    }
+
+`consumes: []` is REFUSED by Inventory ("A production run needs at least one
+consume line"). Get the list from GET .../consume-plan.
+
+THE CONSUME PLAN DOES NOT CHOOSE A LOT. Inventory lists every batch WHATEVER ITS
+STATUS, so `batches[0]` may be EXPIRED, and under a `warn` policy an expired
+batch is CONSUMED rather than refused. Which lot went into a run is the
+genealogy record — make it a deliberate choice.
+`warehouse_is_default: true` means nobody chose it; the material is often
+somewhere other than the work order's warehouse.
+
+THREE OUTCOMES, ONE SUCCESS:
+    posted             201  stock moved, this call did it
+    already_completed  200  THIS CALL POSTED NOTHING. Figures are the WINNER's
+    in_flight          202  another posting owns the line. Do NOT retry
+
+NEVER render `already_completed` as a plain success. It carries:
+    postedQty      number | null   null = Inventory did not say
+    completedBy    {id,display} | null   null = NOT RECORDED, never "nobody"
+    completedAt    string | null
+On a race loss all three are null, because the winning posting never went
+through this module's claim. The module returns null rather than naming the one
+caller it knows did NOT post. Do not substitute "you" or 0.
+
+WARNINGS RIDE ON SUCCESS. A non-empty `warnings` array on a 201 is NOT a
+failure. It records that a policy decided something a human would otherwise have
+decided (expired batch consumed under a `warn` policy). Discarding it loses the
+only record that expired material went into a finished good. `warning.line` is
+the RECIPE's component ordinal, not an index into your consumes.
+
+IDEMPOTENCY: the key is permanent per line, no timestamp, no version suffix.
+Same values -> replays, posts nothing. DIFFERENT values -> REFUSED. So 480 typed
+by mistake CANNOT be fixed by posting 500. Reverse, then post again. Tell the
+operator this BEFORE they confirm — GET /limitations serves the sentence.
+
+## Other things that bite
+
+- ONE LINE POSTS AS ONE INVENTORY CALL. A multi-line work order is several calls
+  and is NOT atomic across them. `partially_posted: true` is expected, not a
+  fault. Failed lines show why; succeeded lines stay posted.
+
+- CANCEL MAY SHORT-CLOSE. One endpoint, and the module decides: nothing posted
+  -> Cancelled; something posted -> Short-closed (what was made stays). Different
+  facts downstream — tell the user which one they are causing.
+
+- SCRAP MOVES NO STOCK. Scrapped units never entered a balance. The material they
+  consumed was accounted for when the run consumed it; issuing them would
+  double-count.
+
+- OVER-PRODUCTION IS MAKE-TO-STOCK. 512 against a plan of 500 credits the order
+  500. The excess 12 is never the customer's.
+
+- UNDER-YIELD LEAVES A REMAINDER. 480 of 500 credits 480 and leaves 20 owed, so a
+  top-up can be raised.
+
+- YIELD IS KEYED BY RECIPE VERSION and versions are never averaged together.
+  `yield_pct: null` = no planned quantity, so no denominator. NOT 0%.
+  Runs with no pinned version are reported SEPARATELY under `unattributed`.
+
+- SHORTFALL REPORT: check `ledger_unavailable` FIRST. When true,
+  `consumed_per_ledger` is null on every row and the figures are the snapshots'
+  alone — an upper bound, not a measurement. Reporting it as 0 consumption
+  reports the whole requirement unconsumed, which starts purchase orders.
+
+- DRILL HOPS: `reachable: false` means NO READ EXISTS to send the query to, not
+  that there is nothing to find. Render disabled with `blocked_by`; never hidden,
+  never a working link. A hop that silently returns nothing looks identical to a
+  run that produced no movements. Today only queue->line and
+  shortfall->requirement land.
+
+- EXPORTS: check `re_importable`. False by design for work_order_lines and
+  material_requirements (their quantities are the engine's). False by condition
+  when any external_key is blank or duplicated — `not_importable_because` says.
+
+- QUEUE FLAGS: `demand_unknown` and `shortfall_unknown` are DEGRADED cases, not
+  "fine". They mean the module could not answer that question at all.
+
+## Errors
+
+    { error, message, field?, line?, capability? }
+
+    400/422  wrong request, or a rule refuses it. Nothing changed
+    403      not enabled for the account, or capability not held
+    404      no such work order/line on this account
+    409      state conflict — line moved, or a posting is in flight
+    500      a refusal that escaped as an unhandled error. Report it
+
+SHOW `message`. The shortfall gate names the component and the shortage; the
+over-planning guard names the quantity already committed; the demand gate names
+the order's status. `field` may name something your form has no input for —
+render the message anyway rather than only beside a matching field.
+
+## TypeScript SDK
+
+    import { ERPLiteClient } from '@erplite/tables-sdk';
+    const client = new ERPLiteClient({ token: 'Bearer ...' });
+    await client.production.listWorkOrders({ status: 'Released' });
+
+`ProductionApi` covers every route above and carries these rules in its doc
+comments.

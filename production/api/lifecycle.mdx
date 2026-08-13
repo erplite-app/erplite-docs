@@ -1,0 +1,274 @@
+---
+title: "The line lifecycle"
+description: "Release, start, post, complete — plus amend, scrap, write off, reverse, cancel, and the demand credit retry."
+---
+
+Every act here happens on a **line**, addressed by its permanent `line_uid`.
+
+## Release
+
+```http
+PATCH /work-order-lines/WO-000123-L01/release
+```
+
+Requires `wo.release`. Releasing over a shortfall additionally requires `wo.release_override`.
+
+```json
+{ "item": "SKU-CAKE", "warehouse": "WH-A" }
+```
+
+| Field | Notes |
+|---|---|
+| `item` | The item being made |
+| `warehouse` | Where the **output** goes. Taken from the header when omitted |
+| `strategy` | Overrides the resolved strategy. Needs `wo.release_override` |
+| `overrideShortfall` | Proceed past a blocking shortfall. Needs `wo.release_override` |
+
+`PATCH` rather than `POST` because release is a state change on a line that already exists, not a new resource.
+
+Release does four things: **pins the recipe version**, explodes it for the outstanding quantity through Inventory, reads stock for each component, and **snapshots** the requirement. After this the run is built against the version it pinned, whatever is published later.
+
+A shortfall refuses the release and names it:
+
+```json
+{
+  "error": "shortfall_blocks_release",
+  "message": "SKU-FLOUR is short by 700 KG at WH-A across live work orders. Release needs the shortfall cleared, or an override.",
+  "field": "components"
+}
+```
+
+<Note>
+The shortfall is netted across every live work order, not summed from snapshots. Three lines released a week apart against the same 200 kg each recorded 200; subtracting each in turn would understate the shortage by 400.
+</Note>
+
+## Start
+
+```http
+POST /work-order-lines/WO-000123-L01/start
+```
+
+Requires `wo.start`. Body is optional: `{ "note": "..." }`.
+
+Its own act rather than something inferred from a posting, because a cancelled demand is treated differently for started and unstarted work — unstarted work is auto-cancelled, started work is blocked for a person to decide. So "started" has to mean something somebody did.
+
+Posting refuses an unstarted line and names this route.
+
+## Post output
+
+```http
+POST /work-order-lines/WO-000123-L01/post
+```
+
+Requires `wo.complete`. Output above the tolerance additionally requires `wo.over_produce`.
+
+```json
+{
+  "effectiveAt": "2026-08-13T09:14:00.000Z",
+  "outputQty": 480,
+  "outputItem": "SKU-CAKE",
+  "outputWarehouse": "WH-A",
+  "outputBatch": {
+    "code": "LOT-CAKE-2026-08-13",
+    "mfg_date": "2026-08-13",
+    "expiry_date": "2026-09-13"
+  },
+  "consumes": [
+    { "component_item": "SKU-FLOUR", "warehouse": "WH-MAIN" },
+    { "component_item": "SKU-MILK",  "warehouse": "WH-MAIN", "batch": "LOT-MILK-2" }
+  ]
+}
+```
+
+<Warning>
+**`consumes` must not be empty.** Inventory refuses a run with no consume lines. Get the list from [the consume plan](/production/api/material#what-a-line-will-consume) — and choose the lot yourself, because the plan deliberately does not.
+</Warning>
+
+`outputQty` is the **good** output. Scrap is recorded separately and does not belong here. `outputBatch` is required for a batch-tracked item; Inventory refuses without one and says so.
+
+### Read `outcome` first
+
+```json
+{ "outcome": "posted", "postedQty": 480, "warnings": [] }
+```
+
+| `outcome` | Status | Means |
+|---|---|---|
+| `posted` | `201` | Stock moved, and this call did it |
+| `already_completed` | `200` | **This call posted nothing** |
+| `in_flight` | `202` | Another posting owns this line |
+
+On `already_completed`:
+
+```json
+{
+  "outcome": "already_completed",
+  "postedQty": 480,
+  "completedBy": { "id": "u-kavya", "display": "Kavya" },
+  "completedAt": "2026-08-13T09:12:00.000Z",
+  "warnings": []
+}
+```
+
+<Warning>
+Never render this as a plain success. The figures are **the winner's**, not the caller's, and showing them as the caller's own is the divergence this outcome exists to surface. Show who, when and with what quantity — and when any of those is `null` say "not recorded" rather than filling the gap.
+
+`null` here is common and correct: when you lost a concurrent race, the winning posting never went through this module's claim, so the module genuinely does not know who posted. It returns `null` rather than naming the one caller it is certain did *not*.
+</Warning>
+
+### Warnings ride on success
+
+```json
+{
+  "outcome": "posted",
+  "postedQty": 480,
+  "warnings": [
+    {
+      "line": 3,
+      "code": "expired_stock_consumed",
+      "message": "Batch \"LOT-MILK-EXPIRED-2026-07-01\" of SKU-MILK expired on 2026-07-01. It was consumed because policy allows it with a warning."
+    }
+  ]
+}
+```
+
+The stock moved in full. A warning records that a policy took a decision a human would otherwise have taken. Show it — it is the only record that expired material went into a finished good, which is what a recall asks for later. `line` is the **recipe's** component ordinal, not an index into your `consumes`.
+
+### The quantity cannot be corrected by posting again
+
+The idempotency key is permanent per line. Posting the **same** values replays and posts nothing new; posting **different** values under that key is **refused**. So 480 entered by mistake cannot be fixed with 500 — [reverse](#reverse-a-posting) and post again.
+
+Tell the operator this **before** they confirm. [`GET /limitations`](/production/api/admin#operator-warnings) serves the exact sentence.
+
+## Complete
+
+```http
+POST /work-order-lines/WO-000123-L01/complete
+```
+
+Requires `wo.complete`. Body optional: `{ "note": "..." }`.
+
+Refused on a line that has posted nothing — completion records what a run *made*, and a run that made nothing is a cancel or a write-off.
+
+The response carries a `limitations` array:
+
+> This figure is a YIELD variance: planned output against actual output. It is not a material variance. Production sends Inventory the components to consume and Inventory applies the recipe's quantities, so if the floor used more or less material than the recipe says, nothing here records it.
+
+Completing at 480 against 500 credits the demand with 480 and leaves **20 owed**, so a top-up can be raised. Completing at 512 credits the order with **500**; the excess 12 is make-to-stock and is never credited to the customer.
+
+## Amend a Draft line
+
+```http
+PATCH /work-order-lines/WO-000123-L01/amend
+```
+
+Requires `wo.amend`.
+
+```json
+{ "planned_qty": 60, "reason": "Mistyped at entry" }
+```
+
+<Note>
+The field is `planned_qty`, not `qty`. `reason` is required — it is the only record of why a demand's planned quantity moved.
+</Note>
+
+**The `line_uid` survives.** Amending is not cancel-and-re-raise: the uid is permanent, and burning one to fix a typo loses the thread between a run and the demand it was raised against.
+
+## Record scrap
+
+```http
+POST /work-order-lines/WO-000123-L01/scrap
+```
+
+Requires `wo.complete`.
+
+```json
+{ "scrappedQty": 5, "reason": "Tray dropped on the floor" }
+```
+
+<Note>
+The field is `scrappedQty`, not `qty`.
+</Note>
+
+**This moves no stock**, and that is correct. The scrapped units never entered a balance, so there is nothing to take out — the material they consumed was already accounted for when the run consumed it. Issuing them would double-count the loss.
+
+The reason is carried on the event. It is the only record of *why*.
+
+## Write off a batch
+
+```http
+POST /work-order-lines/WO-000123-L01/fail
+```
+
+Requires `wo.close`.
+
+```json
+{
+  "lostQty": 500,
+  "reason": "Contaminated batch, whole run condemned",
+  "consumes": [
+    { "component_item": "SKU-FLOUR", "warehouse": "WH-MAIN" },
+    { "component_item": "SKU-MILK",  "warehouse": "WH-MAIN", "batch": "LOT-MILK-2" }
+  ]
+}
+```
+
+<Note>
+The field is `lostQty`. `consumes` is required and must name the lots — a batch-tracked component cannot be issued without one. Get them from [the consume plan](/production/api/material#what-a-line-will-consume).
+</Note>
+
+A **total** loss: the material leaves stock through an Inventory issue, no finished goods are recorded, and the line closes. Distinct from scrap, which records a partial loss on a run that continues and moves nothing.
+
+**Known limitation:** the movement carries no genealogy reference and no recipe version, so the yield report cannot attribute this loss to a recipe. Stated on the response as well as here.
+
+## Cancel — or short-close
+
+```http
+POST /work-order-lines/WO-000123-L01/cancel
+```
+
+Requires `wo.cancel`, or `wo.short_close` when something has been produced.
+
+```json
+{ "reason": "Customer withdrew the order" }
+```
+
+One endpoint, two facts, and **the module decides which**:
+
+- **Nothing posted** → `Cancelled`. The line made nothing.
+- **Something posted** → `Short-closed`. What was made stays in stock; the rest is given up.
+
+They mean different things downstream. A UI offering this should say which one it is about to cause rather than presenting one unlabelled button.
+
+## Reverse a posting
+
+```http
+POST /work-order-lines/WO-000123-L01/reverse
+```
+
+Requires `wo.reverse`.
+
+```json
+{
+  "effective_at": "2026-08-13T11:00:00.000Z",
+  "reason": "Posted 480 in error, actual output was 500"
+}
+```
+
+<Note>
+`effective_at` is **required**. Inventory refuses an empty one.
+</Note>
+
+This is the correction route the reuse warning names. Reverse, then post again with the right figure.
+
+## Tell the demand again
+
+```http
+POST /work-order-lines/WO-000123-L01/credit-demand
+```
+
+Requires `wo.complete`.
+
+The fix for a line sitting at `posted, demand not yet credited`. That state means the stock moved and the write-back to the demand failed; the run is not finished and the demand still reads as outstanding to everybody else.
+
+There is nothing to supply — the only correct action is to tell it again. When it fails, the server's message says why, and the control should stay: the reason it failed once is usually the reason it will fail again, and hiding it strands the line.

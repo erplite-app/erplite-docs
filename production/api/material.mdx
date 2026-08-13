@@ -1,0 +1,158 @@
+---
+title: "Recipes and material"
+description: "The recipe preview, what a line will consume, live shortfalls across orders, and what could be made rather than bought."
+---
+
+## The recipe a Draft line would use
+
+```http
+GET /recipes/published?item=SKU-CAKE
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "item": "SKU-CAKE",
+  "bom_version": "a2mzsx",
+  "version_no": "3",
+  "output_qty": 100,
+  "output_uom": "Nos",
+  "lines": [],
+  "is_preview": true,
+  "preview_caveat": "This is the recipe currently published for SKU-CAKE. Nothing is pinned until the line is released, and the published version may change before then."
+}
+```
+
+<Warning>
+**This is a preview, not a pin.** It follows whatever is published: publish a new version while a Draft line is open and this answer moves. A caller that treats it as fixed will be wrong at release.
+
+The caveat travels on the payload rather than living in your code, so a screen cannot forget it.
+</Warning>
+
+## What a line will consume
+
+```http
+GET /work-order-lines/WO-000123-L01/consume-plan
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "line_uid": "WO-000123-L01",
+  "components": [
+    {
+      "component_item": "SKU-FLOUR",
+      "base_uom": "KG",
+      "required_qty": 200,
+      "warehouse": "WH-A",
+      "warehouse_is_default": true,
+      "batch_tracked": false,
+      "batches": []
+    },
+    {
+      "component_item": "SKU-MILK",
+      "base_uom": "L",
+      "required_qty": 40,
+      "warehouse": "WH-A",
+      "warehouse_is_default": true,
+      "batch_tracked": true,
+      "batches": ["LOT-MILK-EXPIRED-2026-07-01", "LOT-MILK-2"]
+    }
+  ],
+  "blockers": []
+}
+```
+
+Call this before [posting](/production/api/lifecycle#post-output) or [writing off](/production/api/lifecycle#write-off-a-batch). Inventory refuses a run with an empty `consumes` array, and this is where the list comes from.
+
+### It does not choose for you, on purpose
+
+<Warning>
+**The first lot in `batches` is not necessarily usable.** Inventory lists every batch whatever its status, so an expired one can be first — and under a `warn` policy an expired batch is *consumed* rather than refused.
+
+Which lot went into a run is the genealogy record. A lot picked silently by software is a lot nobody confirmed, so this endpoint offers them and leaves the choice to a person.
+</Warning>
+
+### `warehouse_is_default` means nobody chose it
+
+The requirement snapshot carries no per-component warehouse, so the default is the work order's own — and the material is frequently somewhere else. On a real account a component's lots may sit in a raw-materials warehouse while the output goes to finished goods.
+
+Treat the warehouse as a **changeable field**, not a fact. Rendering it as settled text makes the flag decorative.
+
+### `required_qty` is this line's share
+
+The snapshot consolidates a component across every line that draws on it. This figure is unpicked back to **this line's** contribution — showing a 50-unit line the 900 kg belonging to all three lines would be a wrong number under a right name.
+
+### Blockers are refusals you can see coming
+
+```json
+{
+  "line_uid": "WO-000123-L01",
+  "components": [],
+  "blockers": [
+    "SKU-MILK is batch-tracked and Inventory reports no lots for it. A posting naming no lot will be refused, and there is no lot to name — check the component has stock at a warehouse this account can see."
+  ]
+}
+```
+
+Two conditions make a posting impossible, and both are facts about the data rather than about your form: no components at all (the line was never released, so nothing was snapshotted), and a batch-tracked component with no lots. Show them **before** the operator enters a quantity — after is the worst moment to find out.
+
+## Live shortfalls
+
+```http
+GET /shortfalls
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "rows": [
+    {
+      "component_item": "SKU-FLOUR",
+      "base_uom": "KG",
+      "required": 900,
+      "on_hand": 200,
+      "shortfall": 700,
+      "work_orders": ["WO-000123", "WO-000131"]
+    }
+  ]
+}
+```
+
+Stock read **now**, netted across every live work order. This is the operational view — "what is stopping work today" — and is distinct from [the shortfall report](/production/api/reports-and-exports#shortfalls), which is anchored to the snapshots and the movement ledger.
+
+`on_hand: null` means the stock read **failed**. It is not zero, and showing it as zero sends somebody to make or buy goods that may already be on the shelf.
+
+## What could be made rather than bought
+
+```http
+GET /work-order-lines/WO-000123-L01/makeable
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "offers": [
+    {
+      "component_item": "SKU-ICING",
+      "shortfall": 120,
+      "base_uom": "KG",
+      "published_version": "b7xk2p"
+    }
+  ],
+  "not_makeable": [
+    { "component_item": "SKU-FLOUR", "reason": "No published recipe — this is bought, not made." }
+  ]
+}
+```
+
+An **offer**, never a cascade. Raising the second work order is a hand action, and that is deliberate:
+
+- A cascade turns one release into a tree. A cake short of icing raises an icing order, short of syrup, which raises another — and a planner who meant to make 100 cakes owns six work orders they did not ask for, each pinning a recipe and holding material.
+- Worse, it hides the decision that matters: **make or buy**. Both are legitimate, the answer differs by component and by week, and only a person knows. An automatic cascade answers "make" every time, silently.
+
+`published_version` is a **preview** of the recipe the second order would pin, on the same terms as any other preview — nothing is pinned until that order's line is released.
