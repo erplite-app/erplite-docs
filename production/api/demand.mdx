@@ -1,0 +1,143 @@
+---
+title: "Demand"
+description: "Pick open demand to plan against, read what a line was raised for, and apply a cancellation to the work it caused."
+---
+
+## Open demand you can plan against
+
+```http
+GET /demand?item=SKU-CAKE&warehouse=WH-A
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "rows": [
+    {
+      "demand": {
+        "line_uid": "SO-000117-L01",
+        "customer": "ACME Foods",
+        "item": "SKU-CAKE",
+        "required_qty": 500,
+        "planned_qty": 0,
+        "produced_qty": 0,
+        "allocated_qty": 0,
+        "dispatched_qty": 0,
+        "required_by_date": "2026-08-20",
+        "line_status": "open",
+        "production_gate": { "satisfied": true, "reason": null }
+      },
+      "outstanding": 500,
+      "on_hand": 120,
+      "coverage": "read",
+      "uncovered": 380,
+      "stock_caveat": "Stock shown is not reserved. A second planner looking at this screen a minute later may see the same stock offered again."
+    }
+  ],
+  "coverageUnavailable": false,
+  "coverageUnavailableReason": null
+}
+```
+
+### The gate is applied here, not by you
+
+Demand that is not open for production — unapproved, cancelled, closed — is **absent from this list**. The server applies the gate.
+
+<Warning>
+Do not re-apply it on the client. The enforcing copy lives at create time, and a second copy in a picker is a third place for one rule to live — which is how they drift.
+</Warning>
+
+### `on_hand: null` is not zero
+
+`coverage: "unavailable"` with `on_hand: null` means the stock read failed for that row. `uncovered` then shows the full outstanding quantity, because nothing is known to cover it.
+
+A zero tells a planner the shelves are empty and sends them to make goods; `null` says nobody could look. Rendering the second as the first undoes the distinction the module maintains all the way down.
+
+### Stock here is not a reservation
+
+`stock_caveat` says so, and it travels on the payload for that reason. Two planners on this screen a minute apart may both be offered the same stock. Nothing is held until a run is released and material is checked.
+
+## What one line was raised for
+
+```http
+GET /work-order-lines/WO-000123-L01/demand
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "line_uid": "WO-000123-L01",
+  "demand_ref": { "type": "mfr_so_line", "id": "SO-000117-L01" },
+  "demand": {
+    "line_uid": "SO-000117-L01",
+    "customer": "ACME Foods",
+    "item": "SKU-CAKE",
+    "required_qty": 500,
+    "line_status": "cancelled",
+    "production_gate": { "satisfied": false, "reason": "The order was cancelled on 2026-08-12." }
+  },
+  "status_ceiling": "Short-closed",
+  "status_ceiling_reason": "The demand behind this line is cancelled, so the line cannot be completed against it. What has been made may be short-closed into stock."
+}
+```
+
+`status_ceiling` is the furthest state this line may reach **given its demand**. Read it rather than deriving the rule yourself — the module knows the interaction between the demand's status and what has already been produced, and it changes.
+
+<Note>
+A line's blocked-ness is read from the **demand**, not from a flag stored on the line. That is deliberate: a copied reason goes stale, and a demand un-cancelled after a sweep would leave a line flagged for work nobody is blocking.
+</Note>
+
+## Apply a demand's cancellation
+
+```http
+POST /demand/mfr_so_line/SO-000117-L01/cancelled
+```
+
+Requires `wo.cancel`.
+
+```json
+{
+  "demand_ref": { "type": "mfr_so_line", "id": "SO-000117-L01" },
+  "demand_status": "cancelled",
+  "needs_a_decision": true,
+  "outcomes": [
+    {
+      "lineUid": "WO-000123-L01",
+      "action": "auto_cancelled",
+      "from": "Released",
+      "to": "Cancelled",
+      "postedQty": 0,
+      "reason": "Nothing had been made against this line, so it was cancelled with the demand."
+    },
+    {
+      "lineUid": "WO-000123-L03",
+      "action": "blocked",
+      "from": "In Progress",
+      "to": "In Progress",
+      "postedQty": 20,
+      "reason": "20 has already been made. Finish the run into stock, or short-close it and keep what was made — this is a person's decision."
+    }
+  ],
+  "projection_failures": []
+}
+```
+
+Three outcomes per line:
+
+| `action` | When |
+|---|---|
+| `auto_cancelled` | Nothing had been produced. The line is cancelled with the demand |
+| `blocked` | Something *had* been produced. The line stays put and **needs a decision** |
+| `left_alone` | The line was already finished or already terminal |
+
+### Why this is a route and not a background sweep
+
+Half the outcomes are "you decide", and a supervisor needs to see exactly what happened to each line. A cron that swept demands on a timer would make those decisions invisible, and a background job nobody watches is where a silent divergence lives.
+
+It is **idempotent**: an already-cancelled line reports `left_alone` rather than erroring. Calling it twice is safe.
+
+<Note>
+When the Orders module emits a cancellation event, its subscriber calls this same operation. There will not be a second implementation.
+</Note>

@@ -1,0 +1,215 @@
+---
+title: "Plan to finished goods"
+sidebarTitle: "Plan to finished goods"
+description: "One run end to end: pick demand, raise a work order, release, start, post, complete — and what to do when each step refuses."
+---
+
+This walks one run from an open customer order to finished goods in stock, with the refusals you should expect at each step. Examples use the TypeScript SDK; the raw calls are on the API pages.
+
+```typescript
+import { ERPLiteClient } from '@erplite/tables-sdk';
+
+const client = new ERPLiteClient({ token: 'Bearer your-secret-key' });
+const production = client.production;
+```
+
+## 1. Find demand worth planning against
+
+```typescript
+const { rows, coverageUnavailable } = await production.listDemand({ item: 'SKU-CAKE' });
+```
+
+Only demand that passes its production gate comes back — the server applies it, and you should not re-apply it.
+
+Two things to read carefully:
+
+```typescript
+for (const row of rows) {
+  if (row.coverage === 'unavailable') {
+    // on_hand is null. Nobody could look — this is NOT "the shelf is empty".
+    console.log(`${row.demand.item}: stock unknown, ${row.uncovered} uncovered`);
+  } else {
+    console.log(`${row.demand.item}: ${row.on_hand} on hand, ${row.uncovered} uncovered`);
+  }
+}
+```
+
+And remember `stock_caveat`: what you see is **not reserved**. Another planner on this screen a minute later may be offered the same stock.
+
+## 2. Raise the work order
+
+```typescript
+const wo = await production.createWorkOrder({
+  workOrderDate: '2026-08-13',
+  targetDate: '2026-08-18',
+  warehouse: 'WH-A',
+  lines: [{
+    item: 'SKU-CAKE',
+    qty: 500,
+    uom: 'Nos',
+    factorToBase: 1,
+    baseUom: 'Nos',
+    demandRef: { type: 'mfr_so_line', id: 'SO-000117-L01' },
+  }],
+});
+// wo.lines[0].line_uid === 'WO-000124-L01'
+```
+
+**If it refuses:** planning more than the demand still needs is refused unless the line sets `excessIsForStock: true` and you hold `wo.over_plan`. The message names the outstanding quantity and what is already planned — show it rather than replacing it.
+
+The `line_uid` you get back is **permanent**. Hold on to it; every subsequent call addresses the line by it.
+
+## 3. Release — this is where the recipe is pinned
+
+```typescript
+await production.releaseLine(wo.lines[0].line_uid, {
+  item: 'SKU-CAKE',
+  warehouse: 'WH-A',   // where the OUTPUT goes
+});
+```
+
+Release pins the recipe version, explodes it, reads stock for each component, and snapshots the requirement. Before this the line had no recipe — only a preview that followed whatever was published.
+
+**If it refuses on a shortfall:** the message names the component and the shortage. You have three options, and they are genuinely different decisions:
+
+1. **Get the material.** Check [live shortfalls](/production/api/material#live-shortfalls) for the full picture across orders.
+2. **Make it instead.** `production.makeable(lineUid)` says which short components have a published recipe. Raising that second work order is a hand action on purpose — an automatic cascade answers "make" every time and hides the make-or-buy decision.
+3. **Override.** Needs `wo.release_override`, and it is a supervisor's call.
+
+## 4. Start
+
+```typescript
+await production.startLine(lineUid);
+```
+
+Its own step, not something inferred. If a demand is cancelled later, unstarted work is auto-cancelled and **started** work is blocked for a person to decide — so "started" has to mean something somebody did.
+
+## 5. Ask what the run will consume
+
+```typescript
+const plan = await production.getConsumePlan(lineUid);
+
+if (plan.blockers.length > 0) {
+  // e.g. a batch-tracked component with no lots. Stop here — a posting will be
+  // refused, and finding out after entering the output is the worst moment.
+  throw new Error(plan.blockers.join('\n'));
+}
+```
+
+Then **choose**, per component:
+
+```typescript
+const consumes = plan.components.map((component) => ({
+  component_item: component.component_item,
+  // The default is the work order's warehouse and the material is often
+  // elsewhere. Change it when it is.
+  warehouse: component.warehouse,
+  // Pick a lot deliberately. `batches[0]` may be EXPIRED — Inventory lists
+  // every batch whatever its status, and under a `warn` policy an expired one
+  // is consumed rather than refused.
+  ...(component.batch_tracked ? { batch: chooseLot(component.batches) } : {}),
+}));
+```
+
+## 6. Post the output
+
+```typescript
+const result = await production.postLine(lineUid, {
+  effectiveAt: new Date().toISOString(),
+  outputQty: 480,          // the GOOD output; scrap is separate
+  outputItem: 'SKU-CAKE',
+  outputWarehouse: 'WH-A',
+  outputBatch: { code: 'LOT-CAKE-2026-08-13', mfg_date: '2026-08-13' },
+  consumes,                // must not be empty
+});
+```
+
+**Branch on `outcome` before anything else:**
+
+```typescript
+if (result.outcome === 'already_completed') {
+  // This call posted NOTHING. These figures belong to whoever won.
+  // Never show this as a success.
+  show(`Already completed by ${result.completedBy?.display ?? 'someone — not recorded'}`
+     + ` at ${result.completedAt ?? 'an unrecorded time'}`
+     + `, quantity ${result.postedQty ?? 'not reported by Inventory'}.`);
+  return;
+}
+
+if (result.outcome === 'in_flight') {
+  // Another posting owns this line. Do NOT retry — that risks a second movement.
+  show(`Another posting is running. Reference: ${result.key}`);
+  return;
+}
+
+if ((result.warnings ?? []).length > 0) {
+  // Succeeded, and a policy decided something on your behalf. Show it — this is
+  // the only record that (for instance) expired material went into this batch.
+  show(result.warnings!.map((w) => w.message));
+}
+```
+
+<Warning>
+Before an operator confirms this step, show them [the reuse warning](/production/api/admin#operator-warnings). A quantity entered wrongly **cannot** be fixed by posting again with a different one — that is refused — and by the time they find out, reversal is the only route left.
+</Warning>
+
+## 7. Complete
+
+```typescript
+await production.completeLine(lineUid, { note: 'Tray 3 came out light' });
+```
+
+Completing at 480 against a plan of 500 credits the demand with **480** and leaves **20 owed**, so a top-up run can be raised against the same order. Completing at 512 credits the order with **500** — the excess 12 is make-to-stock and is never the customer's.
+
+The response carries the material-variance limitation. Show it: the variance you are about to display is a *yield* variance, and reading it as a material one is the misreading the sentence exists to prevent.
+
+## When it goes wrong
+
+**The line sits at `posted, demand not yet credited`.** Stock moved; the demand was not told. It is not finished, and the order still reads as outstanding to everybody else.
+
+```typescript
+await production.creditDemand(lineUid);
+```
+
+**The quantity was wrong.**
+
+```typescript
+await production.reverseLine(lineUid, {
+  effective_at: new Date().toISOString(),
+  reason: 'Posted 480, actual output was 500',
+});
+// then post again with the right figure
+```
+
+**Part of the run was lost, and the rest continues.**
+
+```typescript
+await production.scrapLine(lineUid, { scrappedQty: 5, reason: 'Tray dropped' });
+```
+
+This moves **no stock** — the scrapped units never entered a balance, and the material they consumed was accounted for when the run consumed it.
+
+**The whole batch is condemned.**
+
+```typescript
+await production.failBatch(lineUid, {
+  lostQty: 500,
+  reason: 'Contaminated',
+  consumes,   // name the lots — the material really leaves stock
+});
+```
+
+**The customer cancelled.**
+
+```typescript
+const report = await production.demandCancelled('mfr_so_line', 'SO-000117-L01');
+```
+
+Lines with nothing produced are cancelled automatically. Lines that **have** produced something come back `blocked` — what was made is real, and somebody has to decide whether to finish it into stock or short-close and keep it.
+
+## What you should not build
+
+- **A screen that writes a produced quantity.** There is no route. The absence is the control.
+- **Your own copy of the state machine.** Ask the line; `status_ceiling` on the demand read tells you the furthest state a line may reach and why.
+- **Your own copy of the operator warnings.** Fetch them.
+- **A cascade that auto-raises work orders for short components.** The make-or-buy decision is a person's, and a cascade answers "make" every time.

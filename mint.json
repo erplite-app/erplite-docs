@@ -268,6 +268,32 @@
         "orders/guides/order-to-shipment",
         "orders/guides/receive-orders-from-a-client-system"
       ]
+    },
+    {
+      "group": "Production (Developers)",
+      "pages": [
+        "production/overview",
+        "production/concepts",
+        "production/auth-and-roles"
+      ]
+    },
+    {
+      "group": "API Reference",
+      "pages": [
+        "production/api/conventions",
+        "production/api/work-orders",
+        "production/api/lifecycle",
+        "production/api/material",
+        "production/api/demand",
+        "production/api/reports-and-exports",
+        "production/api/admin"
+      ]
+    },
+    {
+      "group": "Guides",
+      "pages": [
+        "production/guides/plan-to-finished-goods"
+      ]
     }
   ],
   "footerSocials": {

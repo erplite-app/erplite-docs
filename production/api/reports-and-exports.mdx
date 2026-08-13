@@ -1,0 +1,203 @@
+---
+title: "Reports and exports"
+description: "Demand coverage, yield by recipe version, shortfalls anchored to the ledger, the drill-through paths, and exports."
+---
+
+Every figure on these reports is read from what was **stored when it happened**, not recomputed now. That is what makes them answerable six weeks later.
+
+## Demand coverage
+
+```http
+GET /reports/demand-coverage?item=SKU-CAKE
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "rows": [
+    {
+      "demand_type": "mfr_so_line",
+      "line_uid": "SO-000117-L01",
+      "customer": "ACME Foods",
+      "item": "SKU-CAKE",
+      "ordered": 500,
+      "planned": 500,
+      "produced": 480,
+      "remaining": 20,
+      "required_by_date": "2026-08-20",
+      "line_status": "open",
+      "gate_blocked": false,
+      "gate_reason": null,
+      "drill": {
+        "demand": { "query": {}, "label": "Demand SO-000117-L01", "reachable": false, "blocked_by": "..." },
+        "lines":  { "query": {}, "label": "Work order lines raised against SO-000117-L01", "reachable": false, "blocked_by": "..." }
+      }
+    }
+  ],
+  "totals": { "ordered": 500, "planned": 500, "produced": 480, "remaining": 20 }
+}
+```
+
+The figures come straight off the demand's stored fields — recomputing them here would be a second implementation of a number the demand system holds.
+
+Unlike [the picker](/production/api/demand#open-demand-you-can-plan-against), gated demand is **present** on this report. A report that answered "what is covered" by hiding the uncovered would be answering a different question.
+
+## Yield
+
+```http
+GET /reports/yield
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "rows": [
+    {
+      "item": "SKU-BREAD",
+      "bom_version": "BOM-BREAD-3",
+      "runs": 2,
+      "planned_qty": 200,
+      "produced_qty": 180,
+      "yield_pct": 90,
+      "line_uids": ["WO-000101-L01", "WO-000104-L01"]
+    },
+    {
+      "item": "SKU-BREAD",
+      "bom_version": "BOM-BREAD-4",
+      "runs": 1,
+      "planned_qty": 100,
+      "produced_qty": 95,
+      "yield_pct": 95,
+      "line_uids": ["WO-000106-L01"]
+    }
+  ],
+  "unattributed": {
+    "runs": 1,
+    "planned_qty": 40,
+    "produced_qty": 38,
+    "reason": "These runs have no pinned recipe version, so they belong to no version and are reported separately rather than averaged into one."
+  }
+}
+```
+
+**Recipe version is a required dimension.** Two versions of one item are two rows and are never averaged together — a yield figure that mixed recipes would be a number people compare across recipes while it describes none of them.
+
+**`yield_pct: null` is not `0%`.** A run with no planned quantity has no denominator, so there is no percentage. Rendering it as zero reports a total failure where the truth is that the question does not apply, and it is the sort of number somebody escalates.
+
+**Unattributed runs are reported apart.** Runs with no pinned version belong to no recipe. Folding them in would move a figure using runs that are not about any of the recipes being compared.
+
+## Shortfalls
+
+```http
+GET /reports/shortfalls?item=SKU-FLOUR
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "anchored_to": "snapshot+ledger",
+  "ledger_unavailable": true,
+  "rows": [
+    {
+      "component_item": "SKU-FLOUR",
+      "base_uom": "KG",
+      "required_at_release": 900,
+      "consumed_per_ledger": null,
+      "unconsumed": null,
+      "work_orders": ["WO-000123"],
+      "warehouse": "WH-A",
+      "ledger_unavailable": true
+    }
+  ]
+}
+```
+
+This is the **historical** view — anchored to the snapshotted requirements and the movement ledger — and is distinct from [live shortfalls](/production/api/material#live-shortfalls), which read stock now.
+
+<Warning>
+**Check `ledger_unavailable` before reading the figures.** When it is `true`, the movement ledger could not be read and `consumed_per_ledger` is `null` on every row. The numbers come from the snapshots alone: an **upper bound** on the shortage, not a measurement of it.
+
+`null` is not zero. Reporting an unreadable ledger as zero consumption reports the whole requirement as unconsumed — a wrong number in the direction that starts purchase orders.
+</Warning>
+
+When the ledger is unreadable the rows are ordered by `required_at_release`, since there is no `unconsumed` to rank by.
+
+## Drill-through
+
+```http
+GET /reports/drill-paths
+```
+
+Requires `wo.view`.
+
+```json
+{
+  "paths": [
+    { "from": "queue",     "hops": ["line", "movement"] },
+    { "from": "coverage",  "hops": ["demand", "line", "movement"] },
+    { "from": "yield",     "hops": ["version", "run"] },
+    { "from": "shortfall", "hops": ["requirement", "balance"] }
+  ]
+}
+```
+
+A drill-through is the promise that every number on a report can be walked back to the thing that produced it. Each report **row** carries its own next hop in a `drill` object, so a client never constructs the join itself — written as links on four screens, that promise is kept in four places and broken in whichever one nobody opened.
+
+Every hop has the same shape:
+
+```json
+{
+  "query": { "item": "SKU-FLOUR", "workOrders": ["WO-000123"] },
+  "label": "Requirement lines for SKU-FLOUR",
+  "reachable": true
+}
+```
+
+<Warning>
+**`reachable: false` means no read exists to send this query to** — not that there is nothing to find. Render it as a **disabled control carrying `blocked_by`**, never as a working link and never hidden.
+
+Hiding it is worse than either: a drill-through whose last hop silently returns nothing looks exactly like a run that genuinely produced no movements, and a planner reads that as a fact about the shop floor rather than about the software.
+</Warning>
+
+Today two hops land — `queue → line` and `shortfall → requirement`. The rest report `reachable: false` with the reason: walking back to a stock **movement** needs a read Inventory does not have, and nothing yet serves one demand line by id, work order lines filtered by demand reference, or line positions by uid.
+
+## Exports
+
+```http
+GET /exports/work_orders
+```
+
+Requires `wo.view`. Entities: `work_orders`, `work_order_lines`, `material_requirements`.
+
+```json
+{
+  "headers": ["external_key", "work_order_no", "work_order_date", "target_date", "warehouse", "assignee", "notes"],
+  "rows": [
+    {
+      "external_key": "prd-wo-WO-000123",
+      "work_order_no": "WO-000123",
+      "work_order_date": "2026-08-11",
+      "target_date": "2026-08-15",
+      "warehouse": "WH-A",
+      "assignee": "kavya",
+      "notes": ""
+    }
+  ],
+  "re_importable": true,
+  "identity": ["external_key"]
+}
+```
+
+**`re_importable` decides what you may do with the file**, and it is false in two different situations:
+
+- **By design**, for `work_order_lines` and `material_requirements`. Their quantities are the engine's, and a file that round-tripped would be a spreadsheet-shaped path into numbers that may only come from a posting.
+- **By condition**, when any `external_key` is blank or repeated. An importer could not tell those rows apart, so the export refuses the claim rather than making a promise it cannot keep. `not_importable_because` says which.
+
+`identity` names the columns that match a row on re-import. It is empty when the file is not re-importable.
+
+<Note>
+A `null` cell survives as `null`, not as `0` or `""`. In `material_requirements`, `stock_at_release: null` means the stock read failed and `0` means the shelf was empty — a CSV writing both as blank would erase the distinction the module maintains everywhere else.
+</Note>

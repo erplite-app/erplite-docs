@@ -1,0 +1,83 @@
+---
+title: "Production Module for Developers"
+sidebarTitle: "Overview"
+description: "Make goods: work orders, recipes, material requirements, yield, and the seam into Inventory."
+---
+
+The Production module makes things. It raises work orders against demand, pins a recipe to each run, checks and snapshots the material a run needs, records what was actually produced through Inventory, and reports what it cost in yield and material.
+
+This section is a developer reference. It documents the concepts, the permission model, and every endpoint. The rest of the ERPLite docs are written for business users and administrators; these pages assume you are writing code against the API.
+
+<Note>
+The module runs as a pilot behind an account allowlist. Your account must be enabled for `/bff-service/production/*` before any of these endpoints will answer — an account that is not enabled receives `403 not_enabled` on every route, including `whoami`. See [Authentication and roles](/production/auth-and-roles).
+</Note>
+
+## The mental model
+
+Five ideas explain almost everything about how the module behaves.
+
+**A produced quantity may only come from an Inventory posting.** There is no endpoint that sets what a run made, because there is no way to be sure of a number a person typed. You post output, Inventory records the movement, and the engine reads it back. This is the reason the module can be trusted about what was made, and it is why correcting a wrong quantity means reversing a posting rather than editing a field.
+
+**The run's quantities live in an engine, not in a table you read.** Each work order line has a *position* holding what is planned, posted, scrapped and owed. That position is authoritative. The platform columns you can see on `prd_work_order_line` are a **projection** of it, refreshed after each write and healed by a reconciler. When the two disagree, the engine is right — so read quantities from this module's endpoints, never from the table.
+
+**A recipe is a preview until you release.** Before release, a Draft line shows the currently published recipe and follows it as it changes. Release **pins** a version, and from that moment the run is built against the version it pinned, whatever is published later. A caller that treats the preview as fixed will be wrong at release, so the preview payload carries the caveat rather than leaving you to remember it.
+
+**Production never writes stock.** Making goods moves material, but Production does not move it. It calls Inventory across a seam and Inventory writes the movements. Production holds the work order and the requirement snapshot; Inventory holds the ledger. The two agree by message, never by shared tables — Production writes no `inv_*` table and nothing outside Production writes a `prd_*` table.
+
+**`null` is never `0`.** A stock figure of `null` means the module could not read it. `0` means the shelf is empty. The two send you to completely different places — one to a system problem, the other to a purchase order — and the module keeps them apart everywhere. Writing `?? 0` against any nullable field in this API converts "we do not know" into a measurement.
+
+## What the module governs, and what it does not
+
+| Kind | Examples | Where it lives | How you change it |
+|------|----------|----------------|-------------------|
+| **Master data** | Items, units, warehouses, batches, recipes | **Not here.** Inventory owns them | Inventory's endpoints |
+| **Configuration** | Strategy, release gate, over-production tolerance | Platform tables (`prd_policy`) | The policy endpoints — admin only |
+| **Documents** | Work orders, work order lines, material requirements | Platform tables, changed only through the module | The document endpoints and their action routes |
+| **The position** | Planned, posted, scrapped and owed quantities; the pinned recipe version; the event outbox | The module's own store, not platform tables | Never directly — only as a side effect of an action |
+| **Stock** | Movements and balances | **Inventory**, not here | Post a line; Inventory writes the movements |
+
+## What you can do with the API
+
+<CardGroup cols={2}>
+  <Card title="Raise and read work orders" icon="clipboard-list" href="/production/api/work-orders">
+    The queue with its flags, one work order with its lines, and raising a Draft from demand.
+  </Card>
+  <Card title="Run a line through its life" icon="play" href="/production/api/lifecycle">
+    Release, start, post output, complete — plus amend, scrap, write off, reverse and cancel.
+  </Card>
+  <Card title="Know what a run needs" icon="boxes-stacked" href="/production/api/material">
+    Recipe previews, what a line will consume, shortfalls across live orders, and what could be made rather than bought.
+  </Card>
+  <Card title="Work from demand" icon="link" href="/production/api/demand">
+    Pick open demand to plan against, see what a line was raised for, and apply a cancellation to the work it caused.
+  </Card>
+  <Card title="Report and export" icon="chart-line" href="/production/api/reports-and-exports">
+    Demand coverage, yield by recipe version, shortfalls anchored to the ledger, drill-throughs and exports.
+  </Card>
+  <Card title="Operate the module" icon="wrench" href="/production/api/admin">
+    Health, identity, operator warnings and the projection reconciler.
+  </Card>
+</CardGroup>
+
+## Where to start
+
+If you are integrating for the first time, read [Concepts](/production/concepts) — particularly the state machine and the posting rules, which are where most integrations get into trouble. Then follow [Plan to finished goods](/production/guides/plan-to-finished-goods), which walks one run end to end.
+
+If you are writing TypeScript, the `@erplite/tables-sdk` package ships a typed `ProductionApi` client that carries these rules in its doc comments:
+
+```typescript
+import { ERPLiteClient } from '@erplite/tables-sdk';
+
+const client = new ERPLiteClient({ token: 'Bearer your-secret-key' });
+const queue = await client.production.listWorkOrders({ status: 'Released' });
+```
+
+## Known limitations
+
+These are deliberate and documented rather than defects. Each is stated where it matters in the API pages too.
+
+**Material variance is not reported.** A completed run tells you its *yield* variance — planned output against actual output. It says nothing about whether the material cost matched, because Production sends Inventory the components to consume and Inventory applies the recipe's quantities. If the floor used more flour than the recipe says, nothing here hears about it. A run that made 480 of 500 may have consumed the material for 480 or for 600.
+
+**A write-off carries no genealogy.** Writing a batch off records the material leaving stock, with no genealogy reference and no recipe version. The yield report cannot attribute that loss to a recipe.
+
+**Two of the four drill-through paths stop early.** Walking a report row back to the stock movement it caused needs a read Inventory does not have yet. Those hops report `reachable: false` with the reason rather than returning nothing, because a hop that silently returned nothing looks exactly like a run that produced no movements.

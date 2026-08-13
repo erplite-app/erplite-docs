@@ -1,0 +1,106 @@
+---
+title: "Conventions"
+description: "Base URL, the error envelope, identifiers, quantities and units, dates, and the nulls that are not zeroes."
+---
+
+## Base URL
+
+```
+https://api.erplite.app/bff-service/production
+```
+
+Every path on these pages is relative to it. Responses return their JSON body **directly** — there is no `{ data }` envelope to unwrap.
+
+## Errors
+
+Every refusal uses one shape:
+
+```json
+{
+  "error": "validation_failed",
+  "message": "SKU-FLOUR is short by 700 KG at WH-A. Release needs the shortfall cleared or overridden.",
+  "field": "components",
+  "line": 1
+}
+```
+
+| Field | When |
+|---|---|
+| `error` | Always. `validation_failed`, `forbidden`, `not_found`, `not_enabled`, `conflict` |
+| `message` | Always. Written to be shown to a person — it says what to do next |
+| `field` | When one field is at fault |
+| `line` | When one line is at fault, 1-based |
+| `capability` | On a `403` from the capability model |
+
+| Status | Meaning |
+|---|---|
+| `400` / `422` | The request is wrong, or a rule refuses it. Nothing changed |
+| `403` | Not enabled for the account, or the capability is not held |
+| `404` | No such work order, line or entity on this account |
+| `409` | A state conflict — the line moved under you, or a posting is in flight |
+| `500` | A refusal that reached the caller as an unhandled error. Report it |
+
+<Warning>
+Refusal messages are the whole point of this API's error handling. The shortfall gate names the component and the shortage; the over-planning guard names the quantity already committed; the demand gate names the order's status. Replacing them with a generic message throws away the only actionable part.
+
+`field` may name something your form has no input for. Render the message anyway — a banner by default, and beside a field only when you have one.
+</Warning>
+
+## Identifiers
+
+| Identifier | Shape | Notes |
+|---|---|---|
+| Work order number | `WO-000123` | Allocated by the module. Unique per account |
+| Line uid | `WO-000123-L01` | **Permanent.** Never changes, never reused |
+| External key | `prd-wo-WO-000123`, `prd-wol-WO-000123-L01` | For joining from outside the module and for imports |
+| Recipe version | Opaque string | Pinned at release; do not parse it |
+
+`line_uid` being permanent is load-bearing. Amending a Draft line keeps it, precisely so the thread between a run and the demand it was raised for survives a corrected typo.
+
+## Quantities and units
+
+**Every quantity crossing this API is in the item's base unit.** When you create a line you supply the quantity in whatever unit you are working in, plus `uom`, `baseUom` and `factorToBase`; the module converts at the edge and everything after that is base units.
+
+Quantities are **absolute, never deltas**. `planned_qty: 60` means "this line's plan is now 60".
+
+There is **no endpoint that sets a produced quantity.** Posted output only enters through a posting to Inventory. See [the lifecycle](/production/api/lifecycle).
+
+## Dates
+
+Calendar days are `YYYY-MM-DD`. Instants are ISO 8601 with a timezone — `2026-08-13T09:14:00.000Z`.
+
+`effectiveAt` on a posting and `effective_at` on a reversal are instants and are **required**; Inventory refuses an empty one. Back-dating is permitted and is compared on the calendar day, not the instant.
+
+## The nulls that are not zeroes
+
+This is the single most important convention in the module, and it applies everywhere:
+
+| Field | `null` means | `0` means |
+|---|---|---|
+| `on_hand` | The stock read failed | The shelf is empty |
+| `stock_at_release` | Same, at snapshot time | Nothing was there |
+| `consumed_per_ledger` | The movement ledger could not be read | Nothing has been consumed |
+| `unconsumed` | Cannot be derived — consumption is unknown | Everything required was consumed |
+| `yield_pct` | No planned quantity, so no denominator | The run produced nothing |
+| `postedQty` on a race loss | Inventory did not say what the winner posted | — |
+| `completedBy` / `completedAt` | Not recorded | — |
+
+Writing `?? 0` against any of them converts "we do not know" into a measurement. In the shortfall report specifically, reporting an unreadable ledger as zero consumption reports the whole requirement as unconsumed — a wrong number in the direction that starts purchase orders.
+
+## Flags that mean "could not read"
+
+The work order queue carries two flags that look like problems and are not the same problem:
+
+| Flag | Means |
+|---|---|
+| `demand_unknown` | We could not tell whether a cancelled order blocks this run |
+| `shortfall_unknown` | We could not tell whether this run has its materials |
+
+Neither is "fine", and they send you to different places. They are separate fields rather than one `unknown` because a planner needs to know *which* question went unanswered.
+
+## What is never in a response
+
+- **A produced quantity you can write back.** There is no such field and no such route.
+- **A status you can set.** Every transition is an action; the module derives the status.
+- **A recipe version on a Draft line.** Nothing is pinned until release.
+- **An `inv_*` record.** Production reads Inventory across a seam and writes none of its tables.
