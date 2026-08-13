@@ -73,8 +73,7 @@ This posts stock. Its response tells you what happened, in detail:
   "lines": [ { "dispatch_line_uid": "DN-000017-L01", "line_uid": "SO-000042-L01", "shipped_qty": 100 } ],
   "resumed": false,
   "shipped_at": "2026-08-09T12:59:28.673Z",
-  "projections": { "written": ["dispatch", "DN-000017-L01", "SO-000042-L01"], "failed": [] },
-  "orders_dispatched": ["SO-000042"]
+  "projections": { "written": ["dispatch", "DN-000017-L01", "SO-000042-L01", "order SO-000042 dimensions"], "failed": [] }
 }
 ```
 
@@ -83,7 +82,16 @@ This posts stock. Its response tells you what happened, in detail:
 | `posted` | Whether **this call** moved the stock. `false` means Inventory replayed an earlier posting — still a success |
 | `resumed` | This caller picked up an attempt another caller had left in flight |
 | `projections` | Which display columns were written, and which failed. A failure here is a stale column, never a lost shipment |
-| `orders_dispatched` | Orders this shipment completed, raised to `Dispatched` |
+
+`orders_dispatched` was **removed on 2026-08-10**. It listed the orders this
+shipment raised to `Dispatched`; there is no raise any more. Shipping recomputes
+each touched order's `dispatch_status` from its lines instead — you can see it in
+`projections.written` above — so re-read the order and look at that field.
+
+That is not a rename. The raise fired only for orders already at `Ready`, so an
+order shipped from stock never got one and could not be delivered or closed by
+any route. A derived field has no equivalent failure, because there is nobody to
+forget.
 
 What it will refuse:
 

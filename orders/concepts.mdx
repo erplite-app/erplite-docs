@@ -7,23 +7,54 @@ Everything in the API follows from six ideas. They are worth reading once before
 
 ## 1. The order lifecycle
 
-An order moves through eight coarse statuses:
+An order moves through seven coarse statuses:
 
 ```
-Received → Acknowledged → In_Production → Ready → Dispatched → Delivered → Closed
-                                                      ↘ Cancelled
+Draft → Received → Acknowledged → In_Progress → Delivered → Closed
+                                       ↘ Cancelled
 ```
+
+Every one of them is reached because a **person** decided something. How much has
+been made and how much has gone are **not** on this list — see §1b.
 
 You never write a status. You call an action and the module decides:
 
 | Action | Moves | Notes |
 |---|---|---|
-| `POST /orders/:orderNo/acknowledge` | `Received → Acknowledged` | Locks the fields listed in the account's policy |
-| `POST /orders/:orderNo/release` | `Acknowledged → In_Production` | Needs authorisation alone — no quantity is consulted |
-| *(automatic)* | `Ready → Dispatched` | Raised inside shipping, when the last line completes |
-| `POST /orders/:orderNo/delivered` | `Dispatched → Delivered` | |
+| `POST /orders/:orderNo/submit` | `Draft → Received` | A draft is an order being composed. Only orders created with `draft: true` are in this state |
+| `POST /orders/:orderNo/acknowledge` | `Received → Acknowledged` | Locks the fields listed in the account's policy. Lands on `In_Progress` instead where `acknowledgement_required` is false |
+| `POST /orders/:orderNo/release` | `Acknowledged → In_Progress` | Needs authorisation alone — no quantity is consulted |
+| `POST /orders/:orderNo/delivered` | `In_Progress → Delivered` | Every line must be dispatched or closed |
 | `POST /orders/:orderNo/close` | `Delivered → Closed` | |
 | `POST /orders/:orderNo/cancel` | → `Cancelled` | Sets `cancelled_qty`; never edits `ordered_qty` |
+
+## 1b. Production and dispatch are separate, and derived
+
+`In_Production`, `Ready` and `Dispatched` were coarse statuses until 2026-08-10.
+They are gone. How far an order has been made and how far it has gone are now two
+**derived dimensions**, recomputed from the line quantities on every write:
+
+```json
+{
+  "order_status": "In_Progress",
+  "production_status": "Not_Started",
+  "dispatch_status": "Fully_Dispatched"
+}
+```
+
+| Field | Values |
+|---|---|
+| `production_status` | `Not_Started`, `Partially_Produced`, `Fully_Produced` |
+| `dispatch_status` | `Not_Dispatched`, `Partially_Dispatched`, `Fully_Dispatched` |
+
+The example above is an order **shipped from stock** — never made, fully sent. One
+coarse status could not express it, and the attempt is what made this change
+necessary: `Dispatched` had to be raised by shipping, shipping only raised it from
+`Ready`, and an order that skipped production never reached `Ready`. Those orders
+could not be delivered or closed by any route.
+
+Never write these two. They are recomputed on every quantity change, so a value
+you write is overwritten by the next shipment.
 
 ### The ceiling
 
@@ -35,9 +66,9 @@ The coarse status is capped by what the quantities justify. An order whose lines
 {
   "order_no": "SO-000042",
   "order_status": "Acknowledged",
-  "ceiling": "In_Production",
+  "ceiling": "Acknowledged",
   "transitions": [
-    { "to": "In_Production", "allowed": true,  "reason": "..." },
+    { "to": "In_Progress", "allowed": true,  "reason": "..." },
     { "to": "Delivered", "allowed": false, "blocking_lines": [1, 3],
       "reason": "An order at Acknowledged cannot move to Delivered." }
   ]

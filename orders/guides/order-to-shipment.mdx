@@ -114,7 +114,14 @@ curl -s -H "$AUTH" "https://api.erplite.app/bff-service/inventory/balances?item=
 curl -s -H "$AUTH" "$BASE/orders/SO-000042"
 ```
 
-The line now reads `allocated_qty: 0, dispatched_qty: 60` — the units **moved buckets**. If the order is complete, its status was raised to `Dispatched` inside the ship call, and `orders_dispatched` on that response said so.
+The line now reads `allocated_qty: 0, dispatched_qty: 60` — the units **moved buckets**.
+
+The order's `dispatch_status` was recomputed in the same call, from its lines. If
+everything has now gone it reads `Fully_Dispatched`, and the order is ready to be
+marked delivered. There is no status raise to watch for and no `orders_dispatched`
+field on the response — both were removed on 2026-08-10, because the raise only
+fired for orders that had passed through production and silently stranded the
+ones shipped from stock.
 
 ## Then
 
