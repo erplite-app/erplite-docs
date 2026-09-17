@@ -16,6 +16,7 @@ Depending on permissions and configuration, users can:
 - Open record detail pages.
 - Add comments and mentions.
 - Review activity history.
+- Read data from another system in a record widget.
 - Upload files, images, and signatures.
 - Link related records.
 - Create or edit child records inline.
@@ -57,9 +58,42 @@ The detail page shows:
 | **Details** | Main field values arranged for review. |
 | **Related tabs** | Child or linked records such as items, dispatches, invoices, or work orders. |
 | **Workflow bar** | Status path and next available actions. |
+| **Side column** | Tabs for **Widgets**, **Comments**, and **Activity**, on the right of the record. |
+| **Widgets** | Data from another system for this record. See [Record Widgets](/configurations/record-widgets). |
 | **Comments** | Team discussion and mentions. |
 | **Activity log** | Audit trail of record changes. |
 | **Allocation tab** | Read-only summary of how quantities have been allocated across downstream documents, when rollup fields exist. |
+
+### The Side Column
+
+On a screen 1024px or wider, the record page has a side column on the right.
+The side column has these tabs:
+
+- **Widgets**, when the record has a widget that the user can see.
+- **Comments**.
+- **Activity**.
+
+The **Widgets**, **Comments**, and **Activity** buttons in the record header control the column:
+
+- When the column is closed, a button opens it on that tab.
+- When the column shows another tab, a button moves to its tab.
+- When the column shows that button's tab, the button closes the column.
+
+A closed column takes no space. The record fields use the full width.
+
+On a screen 1440px or wider, the column opens on the Widgets tab when the record has a widget.
+On a narrower screen, the column starts closed.
+
+Below 1024px, there is no side column.
+Comments and Activity open as panels over the page, and widgets appear under the workflow status bar.
+
+### Small and Zoomed-In Screens
+
+Many users work on laptops with display scaling, for example a 1366×768 screen at 125%.
+On these screens the record page gives the fields more room:
+
+- The record fields change from two columns to one column when the page is narrow.
+- The side column starts closed.
 
 ## AI Guidance
 
@@ -97,6 +131,7 @@ The AI should verify:
 - Relation fields display readable names.
 - Inline child rows save with the parent or existing record as expected.
 - Comments and activity logs capture meaningful history.
+- On a 1366×768 laptop at 125% scaling, the record fields are readable, and the side column buttons open and close the column.
 - Users see only the records and actions allowed by permissions.
 - Allocation or rollup tabs match the linked child records.
 

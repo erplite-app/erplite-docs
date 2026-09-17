@@ -92,6 +92,7 @@
       "pages": [
         "configurations/overview",
         "configurations/home-dashboard",
+        "configurations/record-widgets",
         "configurations/document-mappings"
       ]
     },

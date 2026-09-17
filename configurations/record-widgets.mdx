@@ -1,0 +1,156 @@
+---
+title: "Record Widgets"
+sidebarTitle: "Record Widgets"
+description: "Show data from another system on a record page, and let users act on it through the table's workflow."
+---
+
+A record widget is a panel on a record page.
+It shows live data from another system, next to the record.
+For example, a widget on a Dispatch record can show the delivery appointment that a customer's portal holds.
+
+Users read the data without leaving ERPLite.
+If the widget has a button, the button changes the record through the table's workflow.
+
+## Where Users See Widgets
+
+Widgets appear in the side column of the record page, on the **Widgets** tab.
+The side column also holds the **Comments** and **Activity** tabs.
+
+| Screen width | What the user sees |
+|--------------|--------------------|
+| **1440px or wider** | The side column opens on the Widgets tab when the record has a widget. |
+| **1024px to 1439px** | The side column starts closed. The user clicks the **Widgets** button in the record header to open it. |
+| **Below 1024px** | There is no side column. Widgets appear under the workflow status bar. |
+
+The **Widgets** button works like the **Comments** button:
+
+- When the column is closed, the button opens it on the Widgets tab.
+- When the column shows another tab, the button moves to the Widgets tab.
+- When the column shows the Widgets tab, the button closes the column.
+
+A closed column takes no space. The record uses the full width.
+
+<Note>
+Many users work on laptops with display scaling, for example a 1366×768 screen at 125%. On these screens the side column starts closed, so the record fields have room.
+</Note>
+
+## Who Sees a Widget
+
+A user sees a widget when all of these are true:
+
+- The user can open the record.
+- The widget is enabled for the table.
+- The user has one of the widget's allowed roles or teams. A widget with no allowed roles and no allowed teams is open to every user who can open the record.
+
+A widget can also have a record filter.
+On a record that matches the filter, the widget loads its data.
+On a record that does not match, the widget does not load. It shows **No longer applies to this record**.
+
+## What a Widget Can Change
+
+A widget reads data from the other system.
+A widget does not change data in the other system.
+
+A widget can change the ERPLite record in three ways:
+
+| Kind | What happens |
+|------|--------------|
+| **Transition** | The widget moves the record to another status. The transition's confirm steps, forms, and visibility rules apply. |
+| **Workflow action** | The widget runs a workflow action on the record. |
+| **Field update** | The widget writes a value to one column. |
+
+When a user clicks a widget button, the same checks run as for the workflow buttons.
+If the workflow hides a transition from a user, the widget cannot run it for that user.
+If the user cancels a confirm step, ERPLite writes nothing.
+
+## Setting Up a Widget
+
+The ERPLite team builds each widget.
+Account administrators do not build widgets.
+
+To add a widget to a table, an administrator gives the ERPLite team:
+
+1. The table that gets the widget.
+2. The columns that the widget reads. For example, the PO Number column.
+3. The status change or action that each widget button runs.
+4. The roles or teams that see the widget.
+5. The records that show the widget, if the widget applies to some records only. For example, only dispatches in the Dispatched status.
+
+The ERPLite team connects the widget to the other system and installs it for the account.
+There is no settings screen for widgets yet.
+
+<Warning>
+If you rename or delete a column, a status, or a workflow action that a widget uses, the widget stops working. Tell the ERPLite team before you make the change.
+</Warning>
+
+## When a Widget Cannot Show Data
+
+A widget shows a message when it cannot show data.
+Each widget words its own messages.
+The message tells the user one of these causes:
+
+| Cause | What to do |
+|-------|------------|
+| **A value is missing.** A column that the widget reads is empty, or the user cannot see that column. | Fill the column on the record. Check the column permissions. |
+| **Nothing was found.** The other system has no match for the record's value. | Check the value on the record. |
+| **No permission.** The user's role or team cannot use the widget, or the workflow hides the action. | Check the user's role and team. |
+| **Not set up correctly.** The widget is disabled, or a column, status, or action that it uses is gone. | Tell the ERPLite team. |
+| **The connection needs a new credential.** The other system rejected ERPLite's credential. | Tell the ERPLite team. |
+| **Too many requests.** The other system limits requests. | Wait, then click **Refresh**. |
+| **No answer in time.** The other system did not answer in time. | Click **Refresh**. If it happens again, tell the ERPLite team. |
+| **The service is down.** The other system or the widget service is unavailable. | Try again later. |
+
+When a refresh fails, the widget keeps showing the last good data.
+
+A widget can also show that it is **still updating**.
+This happens when the record changed and the other system has not caught up.
+Click **Refresh**.
+
+## AI Guidance
+
+### When to Use This Feature
+
+An AI should suggest a record widget when users copy values from another system into ERPLite, or switch to another tool to check a record.
+Examples: delivery appointments, shipment tracking, payment status, and a customer portal's order state.
+
+Use a normal column when the data belongs to ERPLite and users edit it.
+Use a widget when the data belongs to another system and users only read it next to the record.
+
+### How to Use It
+
+<Steps>
+  <Step title="Name the other system">
+    Identify the system that holds the data, and what users look up in it.
+  </Step>
+  <Step title="Choose the table and the columns">
+    Choose the table where users need the data. List the columns that identify the record in the other system, such as PO Number.
+  </Step>
+  <Step title="Choose the buttons">
+    For each button, choose the status change, workflow action, or column update that it runs. Use an existing transition, so its confirm steps and rules apply.
+  </Step>
+  <Step title="Choose who sees it">
+    Choose the roles or teams, and the records, that show the widget.
+  </Step>
+  <Step title="Ask the ERPLite team to install it">
+    Give the ERPLite team the table, columns, buttons, roles, and record filter.
+  </Step>
+</Steps>
+
+### How to Verify
+
+The AI should verify:
+
+- A user with an allowed role sees the widget on a matching record.
+- A user without an allowed role does not see the widget.
+- A record that does not match the filter shows **No longer applies to this record**.
+- The widget data matches the other system for that record.
+- Each widget button changes the record as expected, and its confirm step appears.
+- A cancelled confirm step leaves the record unchanged.
+- On a 1366×768 laptop at 125% scaling, the **Widgets** button opens and closes the side column.
+
+## Best Practices
+
+- Keep the columns that a widget reads filled and correct. When a column is empty, the widget cannot look up the record.
+- Map widget buttons to existing workflow transitions, so users see the same confirm steps everywhere.
+- Limit a widget to the roles that act on the data.
+- Tell the ERPLite team before you rename a column, a status, or a workflow action that a widget uses.
